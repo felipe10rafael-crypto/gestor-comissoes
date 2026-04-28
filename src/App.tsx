@@ -1,10 +1,36 @@
 import { useState, useMemo, useEffect, useCallback } from "react";
-import { Plus, Trash2, Menu, X, BarChart3, Users, DollarSign, Download, Settings, Edit2, AlertCircle, CheckCircle, Cloud, Loader, Grid, LogOut } from "lucide-react";
+import { Plus, Trash2, Menu, X, BarChart3, Users, DollarSign, Download, Settings, Edit2, AlertCircle, CheckCircle, Cloud, Loader, Grid, LogOut, Upload, FileText } from "lucide-react";
 import { LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
 import { auth, db } from "./firebase";
 import { signOut, onAuthStateChanged } from "firebase/auth";
 import { doc, setDoc, getDoc } from "firebase/firestore";
 import Login from "./Login";
+
+// BUSCA FUZZY - Tolerância a erros de digitação
+function calcularSimilaridade(str1: string, str2: string): number {
+  if (!str1 || !str2) return 0;
+  
+  const s1 = str1.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  const s2 = str2.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  
+  if (s1 === s2) return 1;
+  if (s1.includes(s2) || s2.includes(s1)) return 0.9;
+  
+  const palavras1 = s1.split(' ');
+  const palavras2 = s2.split(' ');
+  let matches = 0;
+  
+  for (const p1 of palavras1) {
+    for (const p2 of palavras2) {
+      if (p1 === p2 || p1.includes(p2) || p2.includes(p1)) {
+        matches++;
+        break;
+      }
+    }
+  }
+  
+  return matches / Math.max(palavras1.length, palavras2.length);
+}
 
 export default function GestorVendas() {
   const [usuario, setUsuario] = useState<any>(null);
@@ -34,7 +60,10 @@ export default function GestorVendas() {
   const [mostrarFormTipoComissao, setMostrarFormTipoComissao] = useState(false);
   const [editandoTipoComissao, setEditandoTipoComissao] = useState<any>(null);
 
-  const clienteVazio = { nome: "", email: "", telefone: "", tipo: "Lead", admin: "Âncora", valor: "", dataAquisicao: "", dataPrimeiraParcela: "", dataSegundaParcela: "", parcelasComissao: 5, gruposCotas: [] };
+  const [validacaoPDF, setValidacaoPDF] = useState<any>(null);
+  const [processandoPDF, setProcessandoPDF] = useState(false);
+
+  const clienteVazio = { nomeCompleto: "", email: "", telefone: "", tipo: "Lead", admin: "Âncora", valor: "", dataAquisicao: "", dataPrimeiraParcela: "", dataSegundaParcela: "", parcelasComissao: 5, gruposCotas: [] };
   const [novoCliente, setNovoCliente] = useState(clienteVazio);
   const [novoGrupo, setNovoGrupo] = useState({ numeroGrupo: "", admin: "Âncora", observacoes: "" });
   const [novoTipoComissao, setNovoTipoComissao] = useState({ nome: "", percentual: "" });
@@ -109,18 +138,18 @@ export default function GestorVendas() {
       { id: 2, numeroGrupo: "707", admin: "Magalu", observacoes: "Consórcio de veículo" },
     ];
     const cl = [
-      { id: 1, nome: "João Silva", email: "joao@email.com", telefone: "11999999999", tipo: "Lead", admin: "Âncora", valor: 50000, dataAquisicao: "2026-01-15", dataPrimeiraParcela: "2026-01-20", dataSegundaParcela: "2026-02-20", parcelasComissao: 5, status: "Ativo", gruposCotas: [{ grupoId: 1, numeroGrupo: "708", quantidadeCotas: 5, cotas: [1,2,3,4,5] }] },
-      { id: 2, nome: "Maria Santos", email: "maria@email.com", telefone: "11988888888", tipo: "Relacional", admin: "Magalu", valor: 80000, dataAquisicao: "2026-02-01", dataPrimeiraParcela: "2026-02-05", dataSegundaParcela: "2026-03-05", parcelasComissao: 10, status: "Ativo", gruposCotas: [{ grupoId: 2, numeroGrupo: "707", quantidadeCotas: 8, cotas: [1,2,3,4,5,6,7,8] }] },
+      { id: 1, nomeCompleto: "João Silva Santos", email: "joao@email.com", telefone: "11999999999", tipo: "Lead", admin: "Âncora", valor: 50000, dataAquisicao: "2026-01-15", dataPrimeiraParcela: "2026-01-20", dataSegundaParcela: "2026-02-20", parcelasComissao: 5, status: "Ativo", gruposCotas: [{ grupoId: 1, numeroGrupo: "708", quantidadeCotas: 5, cotas: [1,2,3,4,5] }] },
+      { id: 2, nomeCompleto: "Maria Santos Oliveira", email: "maria@email.com", telefone: "11988888888", tipo: "Relacional", admin: "Magalu", valor: 80000, dataAquisicao: "2026-02-01", dataPrimeiraParcela: "2026-02-05", dataSegundaParcela: "2026-03-05", parcelasComissao: 10, status: "Ativo", gruposCotas: [{ grupoId: 2, numeroGrupo: "707", quantidadeCotas: 8, cotas: [1,2,3,4,5,6,7,8] }] },
     ];
     const co = [
-      { id: 1, clienteId: 1, cliente: "João Silva", tipo: "Lead", admin: "Âncora", valor: 50000, comissaoPercentual: 0.7, comissaoTotal: 350, parcelas: 5, parcelas_detalhes: [
+      { id: 1, clienteId: 1, cliente: "João Silva Santos", tipo: "Lead", admin: "Âncora", valor: 50000, comissaoPercentual: 0.7, comissaoTotal: 350, parcelas: 5, parcelas_detalhes: [
         { numero: 1, valor: 70, data: "2026-01-20", status: "Recebido", dataRecebimento: "2026-01-22" },
         { numero: 2, valor: 70, data: "2026-02-20", status: "Recebido", dataRecebimento: "2026-02-25" },
         { numero: 3, valor: 70, data: "2026-03-20", status: "Pendente", dataRecebimento: null },
         { numero: 4, valor: 70, data: "2026-04-20", status: "Pendente", dataRecebimento: null },
         { numero: 5, valor: 70, data: "2026-05-20", status: "Pendente", dataRecebimento: null },
       ]},
-      { id: 2, clienteId: 2, cliente: "Maria Santos", tipo: "Relacional", admin: "Magalu", valor: 80000, comissaoPercentual: 1.5, comissaoTotal: 1200, parcelas: 10, parcelas_detalhes: [
+      { id: 2, clienteId: 2, cliente: "Maria Santos Oliveira", tipo: "Relacional", admin: "Magalu", valor: 80000, comissaoPercentual: 1.5, comissaoTotal: 1200, parcelas: 10, parcelas_detalhes: [
         { numero: 1, valor: 120, data: "2026-02-05", status: "Recebido", dataRecebimento: "2026-02-08" },
         { numero: 2, valor: 120, data: "2026-03-05", status: "Recebido", dataRecebimento: "2026-03-10" },
         { numero: 3, valor: 120, data: "2026-04-05", status: "Recebido", dataRecebimento: "2026-04-08" },
@@ -179,7 +208,7 @@ export default function GestorVendas() {
   };
 
   const salvarCliente = () => {
-    if (!novoCliente.nome || !novoCliente.valor || !novoCliente.dataAquisicao || !novoCliente.dataPrimeiraParcela || !novoCliente.dataSegundaParcela) {
+    if (!novoCliente.nomeCompleto || !novoCliente.valor || !novoCliente.dataAquisicao || !novoCliente.dataPrimeiraParcela || !novoCliente.dataSegundaParcela) {
       mostrarNotificacao("Preencha todos os campos obrigatórios", "error");
       return;
     }
@@ -193,7 +222,7 @@ export default function GestorVendas() {
       const clientesAtualizados = clientes.map(c => c.id === editandoCliente.id ? { ...novoCliente, id: c.id, valor: valorNumerico, status: c.status } : c);
       const comissoesAtualizadas = comissoes.map(com => {
         if (com.clienteId === editandoCliente.id) {
-          return { ...com, cliente: novoCliente.nome, tipo: novoCliente.tipo, admin: novoCliente.admin, valor: valorNumerico, comissaoPercentual: percentualComissao, comissaoTotal, parcelas: parseInt(novoCliente.parcelasComissao), parcelas_detalhes: parcelasDetalhadas };
+          return { ...com, cliente: novoCliente.nomeCompleto, tipo: novoCliente.tipo, admin: novoCliente.admin, valor: valorNumerico, comissaoPercentual: percentualComissao, comissaoTotal, parcelas: parseInt(novoCliente.parcelasComissao), parcelas_detalhes: parcelasDetalhadas };
         }
         return com;
       });
@@ -204,7 +233,7 @@ export default function GestorVendas() {
     } else {
       const novoId = Math.max(0, ...clientes.map(c => c.id)) + 1;
       const clienteCompleto = { ...novoCliente, id: novoId, valor: valorNumerico, status: "Ativo" };
-      const novaComissao = { id: Math.max(0, ...comissoes.map(c => c.id)) + 1, clienteId: novoId, cliente: novoCliente.nome, tipo: novoCliente.tipo, admin: novoCliente.admin, valor: valorNumerico, comissaoPercentual: percentualComissao, comissaoTotal, parcelas: parseInt(novoCliente.parcelasComissao), parcelas_detalhes: parcelasDetalhadas };
+      const novaComissao = { id: Math.max(0, ...comissoes.map(c => c.id)) + 1, clienteId: novoId, cliente: novoCliente.nomeCompleto, tipo: novoCliente.tipo, admin: novoCliente.admin, valor: valorNumerico, comissaoPercentual: percentualComissao, comissaoTotal, parcelas: parseInt(novoCliente.parcelasComissao), parcelas_detalhes: parcelasDetalhadas };
       const clientesAtualizados = [...clientes, clienteCompleto];
       const comissoesAtualizadas = [...comissoes, novaComissao];
       setClientes(clientesAtualizados);
@@ -333,6 +362,174 @@ export default function GestorVendas() {
     setConfiguracoes(novasConfig);
     salvarDados(grupos, clientes, comissoes, novasConfig);
     mostrarNotificacao("Configurações salvas");
+  };
+
+  const processarPDF = async (arquivo: File) => {
+    setProcessandoPDF(true);
+    try {
+      const pdfjsLib = await import('pdfjs-dist');
+      
+      // Worker na pasta public
+      pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
+      
+      const arrayBuffer = await arquivo.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      
+      let textoCompleto = '';
+      
+      // Extrair texto de todas as páginas
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const textContent = await page.getTextContent();
+        const pageText = textContent.items.map((item: any) => item.str).join(' ');
+        textoCompleto += pageText + '\n';
+      }
+
+      console.log('=== TEXTO EXTRAÍDO DO PDF ===');
+      console.log(textoCompleto);
+      console.log('=== FIM DO TEXTO ===');
+
+      // Extrair comissões do PDF
+      const comissoesPDF: any[] = [];
+      const linhas = textoCompleto.split('\n');
+      
+      console.log('=== PROCESSANDO TEXTO ===');
+      
+      // Procurar padrão no texto completo (não linha por linha)
+      // Padrão: Nome (3 palavras ou mais) + data + valor com vírgula
+      const regex = /([A-ZÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝ][a-zàáâãäåæçèéêëìíîïðñòóôõöøùúûüýÿ]+(?:\s+[A-ZÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝ][a-zàáâãäåæçèéêëìíîïðñòóôõöøùúûüýÿ]+){1,})\s+\d{2}\/\d{2}\/\d{2,4}\s+([\d]+,[\d]{2})/g;
+      
+      let match;
+      while ((match = regex.exec(textoCompleto)) !== null) {
+        const nome = match[1].trim();
+        const valorStr = match[2].replace(',', '.');
+        const valor = parseFloat(valorStr);
+        
+        if (!isNaN(valor) && valor > 0) {
+          console.log(`✓ Encontrado: "${nome}" = R$ ${valor}`);
+          comissoesPDF.push({ nome, valor });
+        }
+      }
+      
+      // ESTRATÉGIA 2: Buscar nomes cadastrados no texto
+      if (comissoesPDF.length === 0) {
+        console.log('Tentando Estratégia 2: Buscar clientes cadastrados...');
+        const nomesClientes = clientes.filter(c => c.status !== "Cancelado").map(c => c.nomeCompleto);
+        
+        for (const nomeCliente of nomesClientes) {
+          const palavras = nomeCliente.toLowerCase().split(' ').filter(p => p.length > 2);
+          
+          for (const linha of linhas) {
+            const linhaLower = linha.toLowerCase();
+            const palavrasEncontradas = palavras.filter(p => linhaLower.includes(p));
+            
+            // Se encontrou pelo menos 2 palavras do nome
+            if (palavrasEncontradas.length >= 2) {
+              const valores = linha.match(/([\d]{1,3}(?:[.,][\d]{3})*[,][\d]{2})/g);
+              if (valores) {
+                const valor = parseFloat(valores[valores.length - 1].replace('.', '').replace(',', '.'));
+                if (!isNaN(valor) && valor > 0) {
+                  console.log(`✓ Estratégia 2: "${nomeCliente}" = R$ ${valor}`);
+                  comissoesPDF.push({ nome: nomeCliente, valor });
+                  break;
+                }
+              }
+            }
+          }
+        }
+      }
+      
+      // ESTRATÉGIA 3: Último recurso - qualquer nome + valor
+      if (comissoesPDF.length === 0) {
+        console.log('Tentando Estratégia 3: Padrão genérico...');
+        for (const linha of linhas) {
+          const nomes = linha.match(/[A-ZÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝ][a-zà-ÿ]+(?:\s+[A-ZÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝ][a-zà-ÿ]+){1,}/g);
+          const valores = linha.match(/([\d]{1,3}(?:[.,][\d]{3})*[,][\d]{2})/g);
+          
+          if (nomes && valores) {
+            const nome = nomes[0];
+            const valor = parseFloat(valores[valores.length - 1].replace('.', '').replace(',', '.'));
+            if (!isNaN(valor) && valor > 0 && nome.length > 5) {
+              console.log(`✓ Estratégia 3: "${nome}" = R$ ${valor}`);
+              comissoesPDF.push({ nome, valor });
+            }
+          }
+        }
+      }
+      
+      console.log('=== COMISSÕES EXTRAÍDAS ===');
+      console.log(comissoesPDF);
+      console.log('=== FIM ===');
+
+      // Comparar com comissões cadastradas do mês
+      const comissoesDoMes = comissoesMes;
+      const validacao: any[] = [];
+
+      comissoesDoMes.forEach(com => {
+        const cliente = clientes.find(c => c.id === com.clienteId);
+        if (!cliente) return;
+
+        const totalMes = com.parcelas_detalhes
+          .filter((p: any) => new Date(p.data).getMonth() + 1 === mesFiltro && new Date(p.data).getFullYear() === anoSelecionado)
+          .reduce((sum: number, p: any) => sum + p.valor, 0);
+
+        // BUSCA FUZZY - Encontra mesmo com pequenas diferenças
+        let melhorMatch: any = null;
+        let melhorSimilaridade = 0;
+
+        for (const itemPDF of comissoesPDF) {
+          const sim = calcularSimilaridade(cliente.nomeCompleto, itemPDF.nome);
+          
+          if (sim > melhorSimilaridade && sim >= 0.6) { // 60% de similaridade mínima
+            melhorSimilaridade = sim;
+            melhorMatch = itemPDF;
+          }
+        }
+
+        if (!melhorMatch) {
+          validacao.push({
+            cliente: cliente.nomeCompleto,
+            valorCadastrado: totalMes,
+            valorPDF: null,
+            status: 'faltando'
+          });
+        } else {
+          const diferenca = Math.abs(totalMes - melhorMatch.valor);
+          if (diferenca < 0.01) {
+            validacao.push({
+              cliente: cliente.nomeCompleto,
+              valorCadastrado: totalMes,
+              valorPDF: melhorMatch.valor,
+              status: 'ok'
+            });
+          } else {
+            validacao.push({
+              cliente: cliente.nomeCompleto,
+              valorCadastrado: totalMes,
+              valorPDF: melhorMatch.valor,
+              status: 'divergente'
+            });
+          }
+        }
+      });
+
+      setValidacaoPDF(validacao);
+      mostrarNotificacao("✅ PDF processado com sucesso!");
+    } catch (error) {
+      console.error("Erro ao processar PDF:", error);
+      mostrarNotificacao("❌ Erro ao processar PDF", "error");
+    } finally {
+      setProcessandoPDF(false);
+    }
+  };
+
+  const handleUploadPDF = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const arquivo = e.target.files?.[0];
+    if (arquivo && arquivo.type === 'application/pdf') {
+      processarPDF(arquivo);
+    } else {
+      mostrarNotificacao("Selecione um arquivo PDF válido", "error");
+    }
   };
 
   const faturadoAno = useMemo(() => {
@@ -598,7 +795,7 @@ export default function GestorVendas() {
           <h3 className="font-bold text-white mb-5 text-base">{editandoCliente ? "✏️ Editar Cliente" : "Cadastrar Cliente"}</h3>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
             {[
-              { label: "Nome *", field: "nome", type: "text", placeholder: "João da Silva" },
+              { label: "Nome Completo *", field: "nomeCompleto", type: "text", placeholder: "João da Silva Santos" },
               { label: "Email", field: "email", type: "email", placeholder: "joao@email.com" },
               { label: "Telefone", field: "telefone", type: "text", placeholder: "11999999999" },
               { label: "Data Aquisição", field: "dataAquisicao", type: "date", placeholder: "" },
@@ -697,7 +894,7 @@ export default function GestorVendas() {
                 <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">Nenhum cliente cadastrado</td></tr>
               ) : clientes.map(c => (
                 <tr key={c.id} className="hover:bg-slate-700 transition-colors">
-                  <td className="px-4 py-3 font-semibold text-white whitespace-nowrap">{c.nome}</td>
+                  <td className="px-4 py-3 font-semibold text-white whitespace-nowrap">{c.nomeCompleto}</td>
                   <td className="px-4 py-3"><span className={`px-2 py-1 rounded text-xs font-semibold ${c.tipo === "Lead" ? "bg-blue-900 text-blue-300" : "bg-emerald-900 text-emerald-300"}`}>{c.tipo}</span></td>
                   <td className="px-4 py-3 text-slate-400 text-xs">{c.admin}</td>
                   <td className="px-4 py-3 text-slate-300 whitespace-nowrap">{formatarMoeda(parseFloat(c.valor || 0))}</td>
@@ -728,7 +925,7 @@ export default function GestorVendas() {
     const cotasAlocadas: any = {};
     clientes.forEach(c => {
       if (c.status === "Cancelado") return;
-      c.gruposCotas?.find((gc: any) => gc.grupoId === grupoAtual.id)?.cotas?.forEach((num: number) => { if (num) cotasAlocadas[num] = c.nome; });
+      c.gruposCotas?.find((gc: any) => gc.grupoId === grupoAtual.id)?.cotas?.forEach((num: number) => { if (num) cotasAlocadas[num] = c.nomeCompleto; });
     });
     const cotasOrdenadas = Object.keys(cotasAlocadas).map(Number).sort((a, b) => a - b);
     return (
@@ -774,12 +971,76 @@ export default function GestorVendas() {
 
   const renderComissoes = () => (
     <div className="space-y-4">
-      <div className="flex items-center gap-3 mb-4">
+      <div className="flex items-center gap-3 mb-4 flex-wrap">
         <h2 className="text-xl font-bold text-white">Comissões</h2>
         <select value={mesFiltro} onChange={e => setMesFiltro(parseInt(e.target.value))} className="px-3 py-2 bg-slate-800 border border-slate-600 rounded-lg text-white focus:border-emerald-500 focus:outline-none">
           {mesesNomes.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
         </select>
+        <label className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-semibold transition-colors cursor-pointer">
+          {processandoPDF ? <Loader className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+          {processandoPDF ? "Processando..." : "Importar Relatório PDF para Conferência"}
+          <input type="file" accept="application/pdf" onChange={handleUploadPDF} className="hidden" disabled={processandoPDF} />
+        </label>
       </div>
+
+      {validacaoPDF && (
+        <div className="bg-slate-800 p-5 rounded-xl border border-slate-700 mb-4">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="font-bold text-white text-lg">📊 Resultado da Conferência</h3>
+            <button onClick={() => setValidacaoPDF(null)} className="text-slate-400 hover:text-white transition-colors">
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+          <div className="space-y-2">
+            {validacaoPDF.map((item: any, idx: number) => (
+              <div key={idx} className={`p-4 rounded-lg border-2 ${
+                item.status === 'ok' ? 'bg-emerald-900/20 border-emerald-700' :
+                item.status === 'divergente' ? 'bg-yellow-900/20 border-yellow-700' :
+                'bg-red-900/20 border-red-700'
+              }`}>
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2 mb-2">
+                      {item.status === 'ok' && <span className="text-2xl">🟢</span>}
+                      {item.status === 'divergente' && <span className="text-2xl">🟡</span>}
+                      {item.status === 'faltando' && <span className="text-2xl">🔴</span>}
+                      <p className="font-bold text-white">{item.cliente}</p>
+                    </div>
+                    <div className="grid grid-cols-2 gap-4 text-sm">
+                      <div>
+                        <p className="text-slate-400">Cadastrado:</p>
+                        <p className="font-bold text-white">{formatarMoeda(item.valorCadastrado)}</p>
+                      </div>
+                      <div>
+                        <p className="text-slate-400">No PDF:</p>
+                        <p className={`font-bold ${
+                          item.status === 'ok' ? 'text-emerald-400' :
+                          item.status === 'divergente' ? 'text-yellow-400' :
+                          'text-red-400'
+                        }`}>
+                          {item.valorPDF ? formatarMoeda(item.valorPDF) : 'NÃO ENCONTRADO'}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                  <div className={`px-3 py-1 rounded-lg text-sm font-semibold ${
+                    item.status === 'ok' ? 'bg-emerald-700 text-emerald-100' :
+                    item.status === 'divergente' ? 'bg-yellow-700 text-yellow-100' :
+                    'bg-red-700 text-red-100'
+                  }`}>
+                    {item.status === 'ok' && '✓ CONFERIDO'}
+                    {item.status === 'divergente' && '⚠ DIVERGENTE'}
+                    {item.status === 'faltando' && '✗ FALTANDO'}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="mt-4 p-3 bg-slate-900 rounded-lg border border-slate-600">
+            <p className="text-xs text-slate-400">💡 <strong>Importante:</strong> Esta conferência é apenas visual. Marque as parcelas como "Recebido" manualmente quando o pagamento for efetivado.</p>
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
         <div className="bg-emerald-900 p-4 rounded-xl border border-emerald-700">
