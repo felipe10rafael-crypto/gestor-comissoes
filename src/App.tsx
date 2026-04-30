@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useCallback } from "react";
-import { Plus, Trash2, Menu, X, BarChart3, Users, DollarSign, Download, Settings, Edit2, AlertCircle, CheckCircle, Cloud, Loader, Grid, LogOut, Upload, FileText } from "lucide-react";
+import { Plus, Trash2, Menu, X, BarChart3, Users, DollarSign, Download, Settings, Edit2, AlertCircle, CheckCircle, Cloud, Loader, Grid, LogOut, Upload, AlertTriangle } from "lucide-react";
 import { LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
 import { auth, db } from "./firebase";
 import { signOut, onAuthStateChanged } from "firebase/auth";
@@ -366,6 +366,97 @@ export default function GestorVendas() {
     mostrarNotificacao("Configurações salvas");
   };
 
+  // ============================================================
+  // MELHORIA 3: DETECÇÃO DE DUPLICATAS
+  // Verifica se um cliente do PDF já existe na base por nome (fuzzy)
+  // ou por cota no mesmo grupo
+  // ============================================================
+  const detectarDuplicata = (clienteImport: any): { duplicado: boolean; motivo: string } => {
+    // 1. Verificar nome similar (fuzzy >= 85%)
+    for (const clienteExistente of clientes) {
+      const sim = calcularSimilaridade(clienteImport.nome, clienteExistente.nomeCompleto);
+      if (sim >= 0.85) {
+        return {
+          duplicado: true,
+          motivo: `Nome similar ao cliente já cadastrado: "${clienteExistente.nomeCompleto}"`
+        };
+      }
+    }
+
+    // 2. Verificar cotas já alocadas no mesmo grupo
+    for (const cota of clienteImport.cotas) {
+      for (const clienteExistente of clientes) {
+        if (clienteExistente.status === "Cancelado") continue;
+        for (const gc of (clienteExistente.gruposCotas || [])) {
+          if (gc.numeroGrupo === clienteImport.grupo && gc.cotas?.includes(parseInt(cota))) {
+            return {
+              duplicado: true,
+              motivo: `Cota ${cota} do grupo ${clienteImport.grupo} já alocada para: "${clienteExistente.nomeCompleto}"`
+            };
+          }
+        }
+      }
+    }
+
+    return { duplicado: false, motivo: "" };
+  };
+
+  // ============================================================
+  // MELHORIA 1: APLICAR ESTORNOS
+  // Marca parcelas como "Estornado" e cliente como "Cancelado"
+  // ============================================================
+  const aplicarEstornos = () => {
+    if (!importacaoClientes?.estornos?.length) return;
+
+    let clientesAtualizados = [...clientes];
+    let comissoesAtualizadas = [...comissoes];
+    let totalEstornados = 0;
+
+    for (const estorno of importacaoClientes.estornos) {
+      // Buscar cliente correspondente ao estorno por nome (fuzzy)
+      let melhorCliente: any = null;
+      let melhorSim = 0;
+
+      for (const cliente of clientesAtualizados) {
+        const sim = calcularSimilaridade(estorno.nome, cliente.nomeCompleto);
+        if (sim > melhorSim && sim >= 0.6) {
+          melhorSim = sim;
+          melhorCliente = cliente;
+        }
+      }
+
+      if (!melhorCliente) continue;
+
+      // Atualizar status do cliente para Cancelado
+      clientesAtualizados = clientesAtualizados.map(c =>
+        c.id === melhorCliente.id ? { ...c, status: "Cancelado" } : c
+      );
+
+      // Marcar parcelas pendentes como Estornado na comissão correspondente
+      comissoesAtualizadas = comissoesAtualizadas.map(com => {
+        if (com.clienteId !== melhorCliente.id) return com;
+
+        const parcelasAtualizadas = com.parcelas_detalhes.map((p: any) => {
+          // Estornar apenas parcelas Pendentes (não altera as já Recebidas)
+          if (p.status === "Pendente") {
+            return { ...p, status: "Estornado", dataRecebimento: null };
+          }
+          return p;
+        });
+
+        return { ...com, parcelas_detalhes: parcelasAtualizadas };
+      });
+
+      totalEstornados++;
+    }
+
+    setClientes(clientesAtualizados);
+    setComissoes(comissoesAtualizadas);
+    salvarDados(grupos, clientesAtualizados, comissoesAtualizadas, configuracoes);
+    setImportacaoClientes({ ...importacaoClientes, estornosAplicados: true });
+    mostrarNotificacao(`✅ ${totalEstornados} estorno(s) aplicado(s) — clientes marcados como Cancelado`);
+  };
+
   const processarPDF = async (arquivo: File) => {
     setProcessandoPDF(true);
     try {
@@ -383,13 +474,7 @@ export default function GestorVendas() {
         textoCompleto += pageText + '\n';
       }
 
-      console.log('=== CONFERÊNCIA DE PDF ===');
-      console.log(textoCompleto);
-
-      // Usar mesma lógica da importação
       const comissoesPDF: any[] = [];
-      
-      // Procurar por sequências: Nome DD/MM/AA Valor PCL Grupo Cota % Valor
       const padraoCliente = /([A-ZÀ-Ú][A-ZÀ-Úa-zà-ú\s]+?)\s+(\d{2}\/\d{2}\/\d{2})\s+([\d.,]+)\s+(\d+)\s+(\d{5,6})\s+(\d{4})\s+([\d,]+)\s+([\d,]+)/g;
       
       const inicioEstornos = textoCompleto.indexOf('Estornos');
@@ -400,9 +485,6 @@ export default function GestorVendas() {
         fimParcelasPagas > 0 ? fimParcelasPagas : textoCompleto.length
       );
       
-      console.log('=== SEÇÃO PARCELAS PAGAS ===');
-      console.log(secaoParcelasPagas);
-      
       let match;
       const clientesMap = new Map();
       
@@ -410,9 +492,6 @@ export default function GestorVendas() {
         const nome = match[1].trim();
         const valorComissao = parseFloat(match[8].replace(',', '.'));
         
-        console.log('Cliente encontrado:', nome, '- R$', valorComissao);
-        
-        // Agrupar por cliente (somar cotas)
         if (clientesMap.has(nome)) {
           clientesMap.set(nome, clientesMap.get(nome) + valorComissao);
         } else {
@@ -420,16 +499,10 @@ export default function GestorVendas() {
         }
       }
       
-      // Converter Map para array
       for (const [nome, valor] of clientesMap.entries()) {
         comissoesPDF.push({ nome, valor });
-        console.log('✓ Total agrupado:', nome, '= R$', valor);
       }
-      
-      console.log('=== COMISSÕES EXTRAÍDAS ===');
-      console.log(comissoesPDF);
 
-      // Comparar com comissões cadastradas do mês
       const comissoesDoMes = comissoesMes;
       const validacao: any[] = [];
 
@@ -441,43 +514,27 @@ export default function GestorVendas() {
           .filter((p: any) => new Date(p.data).getMonth() + 1 === mesFiltro && new Date(p.data).getFullYear() === anoSelecionado)
           .reduce((sum: number, p: any) => sum + p.valor, 0);
 
-        // BUSCA FUZZY - Encontra mesmo com pequenas diferenças
         let melhorMatch: any = null;
         let melhorSimilaridade = 0;
 
         for (const itemPDF of comissoesPDF) {
           const sim = calcularSimilaridade(cliente.nomeCompleto, itemPDF.nome);
-          
-          if (sim > melhorSimilaridade && sim >= 0.6) { // 60% de similaridade mínima
+          if (sim > melhorSimilaridade && sim >= 0.6) {
             melhorSimilaridade = sim;
             melhorMatch = itemPDF;
           }
         }
 
         if (!melhorMatch) {
+          validacao.push({ cliente: cliente.nomeCompleto, valorCadastrado: totalMes, valorPDF: null, status: 'faltando' });
+        } else {
+          const diferenca = Math.abs(totalMes - melhorMatch.valor);
           validacao.push({
             cliente: cliente.nomeCompleto,
             valorCadastrado: totalMes,
-            valorPDF: null,
-            status: 'faltando'
+            valorPDF: melhorMatch.valor,
+            status: diferenca < 0.01 ? 'ok' : 'divergente'
           });
-        } else {
-          const diferenca = Math.abs(totalMes - melhorMatch.valor);
-          if (diferenca < 0.01) {
-            validacao.push({
-              cliente: cliente.nomeCompleto,
-              valorCadastrado: totalMes,
-              valorPDF: melhorMatch.valor,
-              status: 'ok'
-            });
-          } else {
-            validacao.push({
-              cliente: cliente.nomeCompleto,
-              valorCadastrado: totalMes,
-              valorPDF: melhorMatch.valor,
-              status: 'divergente'
-            });
-          }
         }
       });
 
@@ -500,7 +557,6 @@ export default function GestorVendas() {
     }
   };
 
-  // IMPORTAÇÃO DE CLIENTES DO PDF
   const importarClientesPDF = async (arquivo: File) => {
     setProcessandoImportacao(true);
     try {
@@ -518,39 +574,23 @@ export default function GestorVendas() {
         textoCompleto += pageText + '\n';
       }
 
-      console.log('=== IMPORTAÇÃO DE CLIENTES ===');
-      console.log(textoCompleto);
-
-      // Extrair dados da tabela "Parcelas Pagas"
       const clientesExtraidos: any[] = [];
       const estornosExtraidos: any[] = [];
       
-      // O PDF vem todo em uma linha gigante, precisamos encontrar os padrões
-      // Procurar por sequências que tenham: Nome DD/MM/AA Valor PCL Grupo Cota % Valor
-      
-      // Regex para encontrar: Nome (maiúsculas) + Data + 7 campos numéricos
       const padraoCliente = /([A-ZÀ-Ú][A-ZÀ-Úa-zà-ú\s]+?)\s+(\d{2}\/\d{2}\/\d{2})\s+([\d.,]+)\s+(\d+)\s+(\d{5,6})\s+(\d{4})\s+([\d,]+)\s+([\d,]+)/g;
       
-      let match;
-      let emParcelasPagas = false;
-      let emEstornos = false;
-      
-      // Detectar seções no texto
-      if (textoCompleto.includes('Parcelas Pagas')) emParcelasPagas = true;
       const inicioEstornos = textoCompleto.indexOf('Estornos');
       const fimParcelasPagas = inicioEstornos > 0 ? inicioEstornos : textoCompleto.indexOf('Recibos de Adiantamento');
       
-      // Extrair seção de Parcelas Pagas
       const secaoParcelasPagas = textoCompleto.substring(
         textoCompleto.indexOf('Parcelas Pagas'),
         fimParcelasPagas > 0 ? fimParcelasPagas : textoCompleto.length
       );
       
-      console.log('=== SEÇÃO PARCELAS PAGAS ===');
-      console.log(secaoParcelasPagas);
+      let match;
       
       while ((match = padraoCliente.exec(secaoParcelasPagas)) !== null) {
-        const dados = {
+        clientesExtraidos.push({
           nome: match[1].trim(),
           dataVenda: match[2],
           valorCredito: parseFloat(match[3].replace('.', '').replace(',', '.')),
@@ -559,22 +599,20 @@ export default function GestorVendas() {
           cota: match[6],
           percentual: parseFloat(match[7].replace(',', '.')),
           valorComissao: parseFloat(match[8].replace(',', '.'))
-        };
-        
-        console.log('Cliente encontrado:', dados.nome, '- R$', dados.valorComissao);
-        clientesExtraidos.push(dados);
+        });
       }
       
-      // Extrair seção de Estornos se existir
       if (inicioEstornos > 0) {
         const secaoEstornos = textoCompleto.substring(
           inicioEstornos,
-          textoCompleto.indexOf('Recibos de Adiantamento')
+          textoCompleto.indexOf('Recibos de Adiantamento') > 0
+            ? textoCompleto.indexOf('Recibos de Adiantamento')
+            : textoCompleto.length
         );
         
-        padraoCliente.lastIndex = 0; // Reset regex
+        padraoCliente.lastIndex = 0;
         while ((match = padraoCliente.exec(secaoEstornos)) !== null) {
-          const dados = {
+          estornosExtraidos.push({
             nome: match[1].trim(),
             dataVenda: match[2],
             valorCredito: parseFloat(match[3].replace('.', '').replace(',', '.')),
@@ -583,14 +621,9 @@ export default function GestorVendas() {
             cota: match[6],
             percentual: parseFloat(match[7].replace(',', '.')),
             valorComissao: parseFloat(match[8].replace(',', '.'))
-          };
-          
-          estornosExtraidos.push(dados);
+          });
         }
       }
-
-      console.log('Clientes extraídos:', clientesExtraidos);
-      console.log('Estornos extraídos:', estornosExtraidos);
 
       // Agrupar por cliente
       const clientesAgrupados = new Map();
@@ -610,7 +643,6 @@ export default function GestorVendas() {
             tipo: item.percentual === 0.07 ? 'Lead' : 'Relacional',
             admin: item.grupo.startsWith('006') ? 'Magalu' : 'Âncora',
             selecionado: true,
-            editavel: false
           });
         } else {
           const clienteExistente = clientesAgrupados.get(chave);
@@ -619,14 +651,30 @@ export default function GestorVendas() {
         }
       }
 
-      const listaClientes = Array.from(clientesAgrupados.values());
+      // MELHORIA 3: Detectar duplicatas para cada cliente extraído
+      const listaClientes = Array.from(clientesAgrupados.values()).map((c: any) => {
+        const { duplicado, motivo } = detectarDuplicata(c);
+        return {
+          ...c,
+          // Auto-desselecionar duplicatas para evitar importação acidental
+          selecionado: !duplicado,
+          duplicado,
+          motivoDuplicata: motivo,
+        };
+      });
       
       setImportacaoClientes({
         clientes: listaClientes,
-        estornos: estornosExtraidos
+        estornos: estornosExtraidos,
+        estornosAplicados: false,
       });
       
-      mostrarNotificacao(`✅ ${listaClientes.length} clientes encontrados!`);
+      const duplicatas = listaClientes.filter((c: any) => c.duplicado).length;
+      if (duplicatas > 0) {
+        mostrarNotificacao(`⚠️ ${listaClientes.length} clientes encontrados — ${duplicatas} possível(is) duplicata(s) detectada(s)`, "error");
+      } else {
+        mostrarNotificacao(`✅ ${listaClientes.length} clientes encontrados!`);
+      }
     } catch (error) {
       console.error("Erro:", error);
       mostrarNotificacao("❌ Erro ao processar PDF", "error");
@@ -660,10 +708,8 @@ export default function GestorVendas() {
     let novoIdComissao = Math.max(0, ...comissoes.map(c => c.id)) + 1;
 
     for (const clienteImport of clientesSelecionados) {
-      // Criar cliente
-      // Converter data: 31/01/26 → 2026-01-31
       const [dia, mes, anoAbrv] = clienteImport.dataVenda.split('/');
-      const ano = `20${anoAbrv}`; // 26 → 2026
+      const ano = `20${anoAbrv}`;
       const dataFormatada = `${ano}-${mes}-${dia}`;
       
       const cliente = {
@@ -687,28 +733,21 @@ export default function GestorVendas() {
         }]
       };
       
-      // Criar comissão com parcelas mensais
-      const comissaoTotal = clienteImport.valorTotal * 10; // Assumindo 10 parcelas
+      const comissaoTotal = clienteImport.valorTotal * 10;
       const parcelas = [];
-      
-      // Data base: a data de venda do cliente
       const [anoBase, mesBase, diaBase] = dataFormatada.split('-').map(Number);
       
       for (let i = 1; i <= 10; i++) {
-        // Calcular data da parcela (adicionar i-1 meses à data base)
         let mesParc = mesBase + (i - 1);
         let anoParc = anoBase;
         
-        // Ajustar ano se passar de dezembro
         while (mesParc > 12) {
           mesParc -= 12;
           anoParc++;
         }
         
-        // Limitar dia ao máximo do mês
         const ultimoDiaMes = new Date(anoParc, mesParc, 0).getDate();
         const diaParc = Math.min(diaBase, ultimoDiaMes);
-        
         const dataParcela = `${anoParc}-${String(mesParc).padStart(2, '0')}-${String(diaParc).padStart(2, '0')}`;
         
         const status = i <= clienteImport.parcela ? "Recebido" : "Pendente";
@@ -778,19 +817,13 @@ export default function GestorVendas() {
   const distribuicaoTipos = useMemo(() => {
     const leads = clientes.filter(c => c.status !== "Cancelado" && c.tipo === "Lead").length;
     const relacionais = clientes.filter(c => c.status !== "Cancelado" && c.tipo === "Relacional").length;
-    return [
-      { name: "Leads", value: leads },
-      { name: "Relacionais", value: relacionais },
-    ];
+    return [{ name: "Leads", value: leads }, { name: "Relacionais", value: relacionais }];
   }, [clientes]);
 
   const distribuicaoAdmin = useMemo(() => {
     const ancora = clientes.filter(c => c.status !== "Cancelado" && c.admin === "Âncora").length;
     const magalu = clientes.filter(c => c.status !== "Cancelado" && c.admin === "Magalu").length;
-    return [
-      { name: "Âncora", value: ancora },
-      { name: "Magalu", value: magalu },
-    ];
+    return [{ name: "Âncora", value: ancora }, { name: "Magalu", value: magalu }];
   }, [clientes]);
 
   const dadosPrevisao = useMemo(() => {
@@ -798,17 +831,15 @@ export default function GestorVendas() {
       const mesNum = idx + 1;
       const recebidoMes = comissoes.reduce((acc, com) => {
         if (clientes.find(c => c.id === com.clienteId)?.status === "Cancelado") return acc;
-        const rec = com.parcelas_detalhes
+        return acc + com.parcelas_detalhes
           .filter((p: any) => p.status === "Recebido" && p.dataRecebimento && new Date(p.dataRecebimento).getFullYear() === anoSelecionado && new Date(p.dataRecebimento).getMonth() + 1 === mesNum)
           .reduce((sum: number, p: any) => sum + p.valor, 0);
-        return acc + rec;
       }, 0);
       const previstoMes = comissoes.reduce((acc, com) => {
         if (clientes.find(c => c.id === com.clienteId)?.status === "Cancelado") return acc;
-        const prev = com.parcelas_detalhes
+        return acc + com.parcelas_detalhes
           .filter((p: any) => new Date(p.data).getFullYear() === anoSelecionado && new Date(p.data).getMonth() + 1 === mesNum)
           .reduce((sum: number, p: any) => sum + p.valor, 0);
-        return acc + prev;
       }, 0);
       return { mes, recebido: recebidoMes, previsto: previstoMes };
     });
@@ -841,28 +872,26 @@ export default function GestorVendas() {
 
   const totalRecebidoMes = useMemo(() => {
     return comissoesMes.reduce((acc, com) => {
-      const rec = com.parcelas_detalhes
+      return acc + com.parcelas_detalhes
         .filter((p: any) => p.status === "Recebido" && new Date(p.data).getMonth() + 1 === mesFiltro && new Date(p.data).getFullYear() === anoSelecionado)
         .reduce((sum: number, p: any) => sum + p.valor, 0);
-      return acc + rec;
     }, 0);
   }, [comissoesMes, mesFiltro, anoSelecionado]);
 
   const totalPendenteMes = useMemo(() => {
     return comissoesMes.reduce((acc, com) => {
-      const pend = com.parcelas_detalhes
+      return acc + com.parcelas_detalhes
         .filter((p: any) => p.status === "Pendente" && new Date(p.data).getMonth() + 1 === mesFiltro && new Date(p.data).getFullYear() === anoSelecionado)
         .reduce((sum: number, p: any) => sum + p.valor, 0);
-      return acc + pend;
     }, 0);
   }, [comissoesMes, mesFiltro, anoSelecionado]);
 
   const clientesAtivos = useMemo(() => clientes.filter(c => c.status === "Ativo").length, [clientes]);
+  
   const totalCotas = useMemo(() => {
     return clientes.reduce((acc, c) => {
       if (c.status === "Cancelado") return acc;
-      const cotasCliente = c.gruposCotas?.reduce((sum: number, gc: any) => sum + (gc.quantidadeCotas || 0), 0) || 0;
-      return acc + cotasCliente;
+      return acc + (c.gruposCotas?.reduce((sum: number, gc: any) => sum + (gc.quantidadeCotas || 0), 0) || 0);
     }, 0);
   }, [clientes]);
 
@@ -961,9 +990,7 @@ export default function GestorVendas() {
           <ResponsiveContainer width="100%" height={200}>
             <PieChart>
               <Pie data={[{ name: "Faturado", value: faturadoAno }, { name: "Falta", value: faltandoMeta }]} cx="50%" cy="50%" outerRadius={80} fill="#8884d8" dataKey="value" label>
-                {[{ name: "Faturado", value: faturadoAno }, { name: "Falta", value: faltandoMeta }].map((entry, index) => (
-                  <Cell key={`cell-${index}`} fill={index === 0 ? "#10b981" : "#f97316"} />
-                ))}
+                {[0, 1].map((index) => <Cell key={`cell-${index}`} fill={index === 0 ? "#10b981" : "#f97316"} />)}
               </Pie>
               <Tooltip formatter={(value: any) => formatarMoeda(value)} />
               <Legend />
@@ -975,9 +1002,7 @@ export default function GestorVendas() {
           <ResponsiveContainer width="100%" height={200}>
             <PieChart>
               <Pie data={distribuicaoAdmin} cx="50%" cy="50%" outerRadius={80} fill="#8884d8" dataKey="value" label>
-                {distribuicaoAdmin.map((entry, index) => (
-                  <Cell key={`cell-${index}`} fill={CORES[index % CORES.length]} />
-                ))}
+                {distribuicaoAdmin.map((entry, index) => <Cell key={`cell-${index}`} fill={CORES[index % CORES.length]} />)}
               </Pie>
               <Tooltip />
               <Legend />
@@ -1025,6 +1050,19 @@ export default function GestorVendas() {
             </button>
           </div>
 
+          {/* MELHORIA 3: Aviso de duplicatas no topo */}
+          {importacaoClientes.clientes.some((c: any) => c.duplicado) && (
+            <div className="bg-yellow-900/30 border border-yellow-600 rounded-lg p-4 mb-4">
+              <div className="flex items-center gap-2 mb-2">
+                <AlertTriangle className="w-5 h-5 text-yellow-400" />
+                <h4 className="font-bold text-yellow-300">
+                  {importacaoClientes.clientes.filter((c: any) => c.duplicado).length} possível(is) duplicata(s) detectada(s)
+                </h4>
+              </div>
+              <p className="text-yellow-200 text-sm">Esses clientes foram desmarcados automaticamente. Revise antes de importar.</p>
+            </div>
+          )}
+
           {/* BOTÕES NO TOPO */}
           <div className="flex gap-3 mb-4">
             <button onClick={confirmarImportacao} className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-3 rounded-lg font-semibold transition-colors">
@@ -1039,7 +1077,16 @@ export default function GestorVendas() {
             <table className="w-full text-sm">
               <thead className="bg-slate-900 border-b border-slate-700">
                 <tr>
-                  <th className="px-3 py-2 text-left"><input type="checkbox" checked={importacaoClientes.clientes.every((c: any) => c.selecionado)} onChange={e => setImportacaoClientes({...importacaoClientes, clientes: importacaoClientes.clientes.map((c: any) => ({...c, selecionado: e.target.checked}))})} className="w-4 h-4 accent-emerald-500" /></th>
+                  <th className="px-3 py-2 text-left">
+                    <input type="checkbox"
+                      checked={importacaoClientes.clientes.every((c: any) => c.selecionado)}
+                      onChange={e => setImportacaoClientes({
+                        ...importacaoClientes,
+                        clientes: importacaoClientes.clientes.map((c: any) => ({...c, selecionado: e.target.checked}))
+                      })}
+                      className="w-4 h-4 accent-emerald-500"
+                    />
+                  </th>
                   <th className="px-3 py-2 text-left text-slate-300 font-semibold">Nome</th>
                   <th className="px-3 py-2 text-left text-slate-300 font-semibold">Tipo</th>
                   <th className="px-3 py-2 text-left text-slate-300 font-semibold">Admin</th>
@@ -1048,11 +1095,12 @@ export default function GestorVendas() {
                   <th className="px-3 py-2 text-left text-slate-300 font-semibold">Grupo</th>
                   <th className="px-3 py-2 text-left text-slate-300 font-semibold">Cotas</th>
                   <th className="px-3 py-2 text-left text-slate-300 font-semibold">Comissão/mês</th>
+                  <th className="px-3 py-2 text-left text-slate-300 font-semibold">Status</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-700">
                 {importacaoClientes.clientes.map((cliente: any, idx: number) => (
-                  <tr key={idx} className="hover:bg-slate-700 transition-colors">
+                  <tr key={idx} className={`transition-colors ${cliente.duplicado ? 'bg-yellow-900/10 hover:bg-yellow-900/20' : 'hover:bg-slate-700'}`}>
                     <td className="px-3 py-3">
                       <input type="checkbox" checked={cliente.selecionado} onChange={e => {
                         const novosClientes = [...importacaoClientes.clientes];
@@ -1060,31 +1108,74 @@ export default function GestorVendas() {
                         setImportacaoClientes({...importacaoClientes, clientes: novosClientes});
                       }} className="w-4 h-4 accent-emerald-500" />
                     </td>
-                    <td className="px-3 py-3 font-semibold text-white">{cliente.nome}</td>
-                    <td className="px-3 py-3"><span className={`px-2 py-1 rounded text-xs font-semibold ${cliente.tipo === 'Lead' ? 'bg-blue-900 text-blue-300' : 'bg-emerald-900 text-emerald-300'}`}>{cliente.tipo}</span></td>
+                    <td className="px-3 py-3 font-semibold text-white">
+                      <div>{cliente.nome}</div>
+                      {/* MELHORIA 3: Motivo da duplicata abaixo do nome */}
+                      {cliente.duplicado && (
+                        <div className="flex items-center gap-1 mt-1">
+                          <AlertTriangle className="w-3 h-3 text-yellow-400 flex-shrink-0" />
+                          <span className="text-yellow-400 text-xs">{cliente.motivoDuplicata}</span>
+                        </div>
+                      )}
+                    </td>
+                    <td className="px-3 py-3">
+                      <span className={`px-2 py-1 rounded text-xs font-semibold ${cliente.tipo === 'Lead' ? 'bg-blue-900 text-blue-300' : 'bg-emerald-900 text-emerald-300'}`}>{cliente.tipo}</span>
+                    </td>
                     <td className="px-3 py-3 text-slate-300">{cliente.admin}</td>
                     <td className="px-3 py-3 text-slate-300">{formatarMoeda(cliente.valorCredito)}</td>
                     <td className="px-3 py-3 text-slate-400">{cliente.parcela}/10</td>
                     <td className="px-3 py-3 text-slate-400">{cliente.grupo}</td>
                     <td className="px-3 py-3 text-slate-400">{cliente.cotas.length} ({cliente.cotas.join(', ')})</td>
                     <td className="px-3 py-3 font-bold text-emerald-400">{formatarMoeda(cliente.valorTotal)}</td>
+                    <td className="px-3 py-3">
+                      {cliente.duplicado
+                        ? <span className="px-2 py-1 rounded text-xs font-semibold bg-yellow-900 text-yellow-300">⚠ Duplicata</span>
+                        : <span className="px-2 py-1 rounded text-xs font-semibold bg-emerald-900 text-emerald-300">✓ Novo</span>
+                      }
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
 
+          {/* MELHORIA 1: Seção de estornos com botão de aplicar */}
           {importacaoClientes.estornos.length > 0 && (
             <div className="bg-red-900/20 border border-red-700 rounded-lg p-4 mb-4">
-              <h4 className="font-bold text-red-300 mb-2">⚠️ Estornos Detectados ({importacaoClientes.estornos.length})</h4>
+              <div className="flex items-center justify-between mb-3">
+                <h4 className="font-bold text-red-300 flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4" />
+                  Estornos Detectados ({importacaoClientes.estornos.length})
+                </h4>
+                {!importacaoClientes.estornosAplicados ? (
+                  <button
+                    onClick={aplicarEstornos}
+                    className="flex items-center gap-2 bg-red-700 hover:bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-semibold transition-colors"
+                  >
+                    ⚡ Aplicar Estornos
+                  </button>
+                ) : (
+                  <span className="flex items-center gap-1 text-emerald-400 text-sm font-semibold">
+                    <CheckCircle className="w-4 h-4" /> Estornos aplicados
+                  </span>
+                )}
+              </div>
+              <p className="text-red-200 text-xs mb-3">
+                Ao aplicar, as parcelas pendentes serão marcadas como <strong>"Estornado"</strong> e o cliente será marcado como <strong>"Cancelado"</strong>.
+              </p>
               <div className="space-y-1 text-sm text-red-200">
                 {importacaoClientes.estornos.map((est: any, idx: number) => (
-                  <div key={idx}>• {est.nome} - Grupo {est.grupo} Cota {est.cota} - {formatarMoeda(est.valorComissao)}</div>
+                  <div key={idx} className="flex items-center gap-2">
+                    <span>•</span>
+                    <span className="font-semibold">{est.nome}</span>
+                    <span className="text-red-400">— Grupo {est.grupo} Cota {est.cota} — {formatarMoeda(est.valorComissao)}</span>
+                  </div>
                 ))}
               </div>
             </div>
           )}
 
+          {/* BOTÕES NO RODAPÉ */}
           <div className="flex gap-3">
             <button onClick={confirmarImportacao} className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-3 rounded-lg font-semibold transition-colors">
               ✓ Importar {importacaoClientes.clientes.filter((c: any) => c.selecionado).length} Clientes
@@ -1183,7 +1274,7 @@ export default function GestorVendas() {
           </div>
 
           <div className="flex gap-2">
-            <button onClick={cadastrarCliente} className="bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-2 rounded-lg font-semibold text-sm transition-colors">Cadastrar</button>
+            <button onClick={salvarCliente} className="bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-2 rounded-lg font-semibold text-sm transition-colors">Cadastrar</button>
             <button onClick={() => { setMostrarFormCliente(false); setNovoCliente(clienteVazio); }} className="bg-slate-700 hover:bg-slate-600 text-white px-6 py-2 rounded-lg text-sm">Cancelar</button>
           </div>
         </div>
@@ -1219,7 +1310,6 @@ export default function GestorVendas() {
                     </td>
                   </tr>
                   
-                  {/* FORMULÁRIO DE EDIÇÃO INLINE */}
                   {editandoCliente && editandoCliente.id === c.id && (
                     <tr key={`edit-${c.id}`}>
                       <td colSpan={7} className="px-4 py-4 bg-slate-900 border-t-2 border-emerald-600">
@@ -1278,11 +1368,8 @@ export default function GestorVendas() {
                                 <div key={g.id} className="mb-3 bg-slate-900 p-3 rounded-lg border border-slate-600">
                                   <label className="flex items-center gap-2 mb-2 cursor-pointer">
                                     <input type="checkbox" checked={isChecked} onChange={e => {
-                                      if (e.target.checked) {
-                                        setNovoCliente({ ...novoCliente, gruposCotas: [...novoCliente.gruposCotas, { grupoId: g.id, numeroGrupo: g.numeroGrupo, quantidadeCotas: 1, cotas: [] }] });
-                                      } else {
-                                        setNovoCliente({ ...novoCliente, gruposCotas: novoCliente.gruposCotas.filter((gc: any) => gc.grupoId !== g.id) });
-                                      }
+                                      if (e.target.checked) setNovoCliente({ ...novoCliente, gruposCotas: [...novoCliente.gruposCotas, { grupoId: g.id, numeroGrupo: g.numeroGrupo, quantidadeCotas: 1, cotas: [] }] });
+                                      else setNovoCliente({ ...novoCliente, gruposCotas: novoCliente.gruposCotas.filter((gc: any) => gc.grupoId !== g.id) });
                                     }} className="w-4 h-4 accent-emerald-500" />
                                     <span className="text-white font-semibold text-sm">Grupo {g.numeroGrupo} ({g.admin})</span>
                                   </label>
@@ -1316,12 +1403,8 @@ export default function GestorVendas() {
                           </div>
 
                           <div className="flex gap-3">
-                            <button onClick={salvarCliente} className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-2 rounded-lg font-semibold transition-colors text-sm">
-                              ✓ Salvar
-                            </button>
-                            <button onClick={() => { setEditandoCliente(null); setNovoCliente(clienteVazio); }} className="bg-slate-700 hover:bg-slate-600 text-white px-6 py-2 rounded-lg font-semibold transition-colors text-sm">
-                              Cancelar
-                            </button>
+                            <button onClick={salvarCliente} className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-2 rounded-lg font-semibold transition-colors text-sm">✓ Salvar</button>
+                            <button onClick={() => { setEditandoCliente(null); setNovoCliente(clienteVazio); }} className="bg-slate-700 hover:bg-slate-600 text-white px-6 py-2 rounded-lg font-semibold transition-colors text-sm">Cancelar</button>
                           </div>
                         </div>
                       </td>
@@ -1400,7 +1483,6 @@ export default function GestorVendas() {
         </label>
       </div>
 
-
       {validacaoPDF && (
         <div className="bg-slate-800 p-5 rounded-xl border border-slate-700 mb-4">
           <div className="flex items-center justify-between mb-4">
@@ -1433,8 +1515,7 @@ export default function GestorVendas() {
                         <p className="text-slate-400">No PDF:</p>
                         <p className={`font-bold ${
                           item.status === 'ok' ? 'text-emerald-400' :
-                          item.status === 'divergente' ? 'text-yellow-400' :
-                          'text-red-400'
+                          item.status === 'divergente' ? 'text-yellow-400' : 'text-red-400'
                         }`}>
                           {item.valorPDF ? formatarMoeda(item.valorPDF) : 'NÃO ENCONTRADO'}
                         </p>
@@ -1482,17 +1563,37 @@ export default function GestorVendas() {
               {com.parcelas_detalhes
                 .filter((p: any) => new Date(p.data).getMonth() + 1 === mesFiltro && new Date(p.data).getFullYear() === anoSelecionado)
                 .map((parcela: any) => (
-                  <div key={parcela.numero} className="flex justify-between items-center p-3 bg-slate-900 rounded-lg border border-slate-600">
+                  <div key={parcela.numero} className={`flex justify-between items-center p-3 rounded-lg border ${
+                    parcela.status === "Estornado"
+                      ? "bg-red-900/20 border-red-700"
+                      : "bg-slate-900 border-slate-600"
+                  }`}>
                     <div>
                       <p className="text-white font-semibold">Parcela {parcela.numero}</p>
                       <p className="text-sm text-slate-400">{new Date(parcela.data).toLocaleDateString('pt-BR')} • {formatarMoeda(parcela.valor)}</p>
                       {parcela.status === "Recebido" && parcela.dataRecebimento && (
                         <p className="text-xs text-emerald-400 mt-1">Recebido em {new Date(parcela.dataRecebimento).toLocaleDateString('pt-BR')}</p>
                       )}
+                      {parcela.status === "Estornado" && (
+                        <p className="text-xs text-red-400 mt-1 font-semibold">⚠ Estornado</p>
+                      )}
                     </div>
-                    <button onClick={() => marcarParcelaRecebida(com.id, parcela.numero)} className={`px-4 py-2 rounded-lg font-semibold transition-colors ${parcela.status === "Recebido" ? "bg-emerald-600 hover:bg-emerald-700 text-white" : "bg-slate-700 hover:bg-slate-600 text-slate-300"}`}>
-                      {parcela.status === "Recebido" ? "Recebido" : "Marcar"}
-                    </button>
+                    {parcela.status === "Estornado" ? (
+                      <span className="px-4 py-2 rounded-lg text-sm font-semibold bg-red-900 text-red-300 border border-red-700">
+                        Estornado
+                      </span>
+                    ) : (
+                      <button
+                        onClick={() => marcarParcelaRecebida(com.id, parcela.numero)}
+                        className={`px-4 py-2 rounded-lg font-semibold transition-colors ${
+                          parcela.status === "Recebido"
+                            ? "bg-emerald-600 hover:bg-emerald-700 text-white"
+                            : "bg-slate-700 hover:bg-slate-600 text-slate-300"
+                        }`}
+                      >
+                        {parcela.status === "Recebido" ? "Recebido" : "Marcar"}
+                      </button>
+                    )}
                   </div>
                 ))}
             </div>
