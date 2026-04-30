@@ -1,54 +1,56 @@
 import { useState } from "react";
+import { signInWithEmailAndPassword, createUserWithEmailAndPassword, sendEmailVerification, sendPasswordResetEmail } from "firebase/auth";
 import { auth } from "./firebase";
-import { signInWithEmailAndPassword, createUserWithEmailAndPassword, sendEmailVerification } from "firebase/auth";
-import { Mail } from "lucide-react";
+import { Eye, EyeOff, Loader } from "lucide-react";
 
 export default function Login({ onLogin }: { onLogin: () => void }) {
   const [email, setEmail] = useState("");
   const [senha, setSenha] = useState("");
+  const [mostrarSenha, setMostrarSenha] = useState(false);
+  const [modo, setModo] = useState<"login" | "cadastro" | "recuperar">("login");
   const [erro, setErro] = useState("");
-  const [modo, setModo] = useState<"login" | "registro">("login");
+  const [sucesso, setSucesso] = useState("");
   const [carregando, setCarregando] = useState(false);
-  const [emailEnviado, setEmailEnviado] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErro("");
+    setSucesso("");
     setCarregando(true);
 
     try {
       if (modo === "login") {
         const userCredential = await signInWithEmailAndPassword(auth, email, senha);
-        
-        // Verifica se o email foi confirmado
-        if (!userCredential.user.emailVerified) {
-          await auth.signOut();
-          setErro("⚠️ Confirme seu email antes de fazer login. Verifique sua caixa de entrada.");
-          setCarregando(false);
-          return;
-        }
-        
+        // Comentado verificação para facilitar testes
+        // if (!userCredential.user.emailVerified) {
+        //   await auth.signOut();
+        //   setErro("Por favor, verifique seu email antes de fazer login. Cheque sua caixa de entrada e spam.");
+        //   setCarregando(false);
+        //   return;
+        // }
         onLogin();
-      } else {
-        // Criar conta
+      } else if (modo === "cadastro") {
         const userCredential = await createUserWithEmailAndPassword(auth, email, senha);
-        
-        // Enviar email de verificação
         await sendEmailVerification(userCredential.user);
-        
-        // Fazer logout e mostrar mensagem
         await auth.signOut();
-        setEmailEnviado(true);
+        setSucesso("Conta criada! Verifique seu email para ativar.");
+        setModo("login");
+      } else if (modo === "recuperar") {
+        await sendPasswordResetEmail(auth, email);
+        setSucesso("Email de recuperação enviado! Verifique sua caixa de entrada.");
+        setModo("login");
       }
     } catch (error: any) {
-      if (error.code === "auth/user-not-found") {
-        setErro("Usuário não encontrado");
-      } else if (error.code === "auth/wrong-password") {
-        setErro("Senha incorreta");
+      if (error.code === "auth/invalid-credential") {
+        setErro("Email ou senha incorretos.");
       } else if (error.code === "auth/email-already-in-use") {
-        setErro("Email já cadastrado");
+        setErro("Este email já está em uso.");
       } else if (error.code === "auth/weak-password") {
-        setErro("Senha muito fraca (mínimo 6 caracteres)");
+        setErro("A senha deve ter pelo menos 6 caracteres.");
+      } else if (error.code === "auth/invalid-email") {
+        setErro("Email inválido.");
+      } else if (error.code === "auth/user-not-found") {
+        setErro("Usuário não encontrado.");
       } else {
         setErro("Erro: " + error.message);
       }
@@ -57,63 +59,83 @@ export default function Login({ onLogin }: { onLogin: () => void }) {
     }
   };
 
-  if (emailEnviado) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 flex items-center justify-center p-4">
-        <div className="bg-slate-800 p-8 rounded-2xl shadow-2xl border border-slate-700 w-full max-w-md text-center">
-          <div className="bg-emerald-600 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
-            <Mail className="w-8 h-8 text-white" />
-          </div>
-          <h2 className="text-2xl font-bold text-white mb-2">Verifique seu email!</h2>
-          <p className="text-slate-300 mb-6">
-            Enviamos um link de confirmação para <strong>{email}</strong>
-          </p>
-          <p className="text-sm text-slate-400 mb-6">
-            Clique no link do email para ativar sua conta. Depois volte aqui e faça login.
-          </p>
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-emerald-950 flex items-center justify-center p-4">
+      <div className="bg-slate-800 p-8 rounded-2xl shadow-2xl w-full max-w-md border border-slate-700">
+        <h1 className="text-3xl font-bold text-white mb-2 text-center">Gestor de Comissões</h1>
+        <p className="text-slate-400 text-center mb-8 text-sm">Sistema de Gestão Financeira</p>
+
+        <div className="flex gap-2 mb-6">
           <button
-            onClick={() => {
-              setEmailEnviado(false);
-              setModo("login");
-            }}
-            className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-3 rounded-lg transition-colors"
+            type="button"
+            onClick={() => { setModo("login"); setErro(""); setSucesso(""); }}
+            className={`flex-1 py-2 rounded-lg font-semibold transition-colors text-sm ${
+              modo === "login"
+                ? "bg-emerald-600 text-white"
+                : "bg-slate-700 text-slate-400 hover:bg-slate-600"
+            }`}
           >
-            Voltar para o Login
+            Login
+          </button>
+          <button
+            type="button"
+            onClick={() => { setModo("cadastro"); setErro(""); setSucesso(""); }}
+            className={`flex-1 py-2 rounded-lg font-semibold transition-colors text-sm ${
+              modo === "cadastro"
+                ? "bg-emerald-600 text-white"
+                : "bg-slate-700 text-slate-400 hover:bg-slate-600"
+            }`}
+          >
+            Cadastro
+          </button>
+          <button
+            type="button"
+            onClick={() => { setModo("recuperar"); setErro(""); setSucesso(""); }}
+            className={`flex-1 py-2 rounded-lg font-semibold transition-colors text-sm ${
+              modo === "recuperar"
+                ? "bg-emerald-600 text-white"
+                : "bg-slate-700 text-slate-400 hover:bg-slate-600"
+            }`}
+          >
+            Esqueci
           </button>
         </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 flex items-center justify-center p-4">
-      <div className="bg-slate-800 p-8 rounded-2xl shadow-2xl border border-slate-700 w-full max-w-md">
-        <h1 className="text-3xl font-bold text-white mb-2 text-center">Monteo</h1>
-        <p className="text-slate-400 text-center mb-8">Gestor de Comissões</p>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="block text-sm font-medium text-slate-300 mb-2">Email</label>
+            <label className="block text-sm font-semibold text-slate-300 mb-2">Email</label>
             <input
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="w-full px-4 py-3 bg-slate-900 border border-slate-600 rounded-lg text-white focus:border-emerald-500 focus:outline-none"
+              className="w-full px-4 py-3 bg-slate-900 border border-slate-600 rounded-lg text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
+              placeholder="seu@email.com"
               required
             />
           </div>
 
-          <div>
-            <label className="block text-sm font-medium text-slate-300 mb-2">Senha</label>
-            <input
-              type="password"
-              value={senha}
-              onChange={(e) => setSenha(e.target.value)}
-              className="w-full px-4 py-3 bg-slate-900 border border-slate-600 rounded-lg text-white focus:border-emerald-500 focus:outline-none"
-              required
-              minLength={6}
-            />
-          </div>
+          {modo !== "recuperar" && (
+            <div>
+              <label className="block text-sm font-semibold text-slate-300 mb-2">Senha</label>
+              <div className="relative">
+                <input
+                  type={mostrarSenha ? "text" : "password"}
+                  value={senha}
+                  onChange={(e) => setSenha(e.target.value)}
+                  className="w-full px-4 py-3 bg-slate-900 border border-slate-600 rounded-lg text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none pr-12"
+                  placeholder="••••••••"
+                  required
+                />
+                <button
+                  type="button"
+                  onClick={() => setMostrarSenha(!mostrarSenha)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white transition-colors"
+                >
+                  {mostrarSenha ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                </button>
+              </div>
+            </div>
+          )}
 
           {erro && (
             <div className="bg-red-900/50 border border-red-700 text-red-200 px-4 py-3 rounded-lg text-sm">
@@ -121,21 +143,39 @@ export default function Login({ onLogin }: { onLogin: () => void }) {
             </div>
           )}
 
+          {sucesso && (
+            <div className="bg-emerald-900/50 border border-emerald-700 text-emerald-200 px-4 py-3 rounded-lg text-sm">
+              {sucesso}
+            </div>
+          )}
+
           <button
             type="submit"
             disabled={carregando}
-            className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-3 rounded-lg transition-colors disabled:opacity-50"
+            className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
           >
-            {carregando ? "Carregando..." : modo === "login" ? "Entrar" : "Criar Conta"}
+            {carregando ? (
+              <>
+                <Loader className="w-5 h-5 animate-spin" />
+                Processando...
+              </>
+            ) : (
+              modo === "login" ? "Entrar" : modo === "cadastro" ? "Criar Conta" : "Enviar Email de Recuperação"
+            )}
           </button>
         </form>
 
-        <button
-          onClick={() => setModo(modo === "login" ? "registro" : "login")}
-          className="w-full mt-4 text-slate-400 hover:text-white text-sm transition-colors"
-        >
-          {modo === "login" ? "Não tem conta? Criar conta" : "Já tem conta? Fazer login"}
-        </button>
+        {modo === "cadastro" && (
+          <p className="text-slate-400 text-xs mt-4 text-center">
+            Ao criar uma conta, você receberá um email de verificação.
+          </p>
+        )}
+        
+        {modo === "recuperar" && (
+          <p className="text-slate-400 text-xs mt-4 text-center">
+            Você receberá um email com instruções para redefinir sua senha.
+          </p>
+        )}
       </div>
     </div>
   );

@@ -62,6 +62,8 @@ export default function GestorVendas() {
 
   const [validacaoPDF, setValidacaoPDF] = useState<any>(null);
   const [processandoPDF, setProcessandoPDF] = useState(false);
+  const [importacaoClientes, setImportacaoClientes] = useState<any>(null);
+  const [processandoImportacao, setProcessandoImportacao] = useState(false);
 
   const clienteVazio = { nomeCompleto: "", email: "", telefone: "", tipo: "Lead", admin: "Âncora", valor: "", dataAquisicao: "", dataPrimeiraParcela: "", dataSegundaParcela: "", parcelasComissao: 5, gruposCotas: [] };
   const [novoCliente, setNovoCliente] = useState(clienteVazio);
@@ -368,16 +370,12 @@ export default function GestorVendas() {
     setProcessandoPDF(true);
     try {
       const pdfjsLib = await import('pdfjs-dist');
-      
-      // Worker na pasta public
       pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
       
       const arrayBuffer = await arquivo.arrayBuffer();
       const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
       
       let textoCompleto = '';
-      
-      // Extrair texto de todas as páginas
       for (let i = 1; i <= pdf.numPages; i++) {
         const page = await pdf.getPage(i);
         const textContent = await page.getTextContent();
@@ -385,81 +383,51 @@ export default function GestorVendas() {
         textoCompleto += pageText + '\n';
       }
 
-      console.log('=== TEXTO EXTRAÍDO DO PDF ===');
+      console.log('=== CONFERÊNCIA DE PDF ===');
       console.log(textoCompleto);
-      console.log('=== FIM DO TEXTO ===');
 
-      // Extrair comissões do PDF
+      // Usar mesma lógica da importação
       const comissoesPDF: any[] = [];
-      const linhas = textoCompleto.split('\n');
       
-      console.log('=== PROCESSANDO TEXTO ===');
+      // Procurar por sequências: Nome DD/MM/AA Valor PCL Grupo Cota % Valor
+      const padraoCliente = /([A-ZÀ-Ú][A-ZÀ-Úa-zà-ú\s]+?)\s+(\d{2}\/\d{2}\/\d{2})\s+([\d.,]+)\s+(\d+)\s+(\d{5,6})\s+(\d{4})\s+([\d,]+)\s+([\d,]+)/g;
       
-      // Procurar padrão no texto completo (não linha por linha)
-      // Padrão: Nome (3 palavras ou mais) + data + valor com vírgula
-      const regex = /([A-ZÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝ][a-zàáâãäåæçèéêëìíîïðñòóôõöøùúûüýÿ]+(?:\s+[A-ZÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝ][a-zàáâãäåæçèéêëìíîïðñòóôõöøùúûüýÿ]+){1,})\s+\d{2}\/\d{2}\/\d{2,4}\s+([\d]+,[\d]{2})/g;
+      const inicioEstornos = textoCompleto.indexOf('Estornos');
+      const fimParcelasPagas = inicioEstornos > 0 ? inicioEstornos : textoCompleto.indexOf('Recibos de Adiantamento');
+      
+      const secaoParcelasPagas = textoCompleto.substring(
+        textoCompleto.indexOf('Parcelas Pagas'),
+        fimParcelasPagas > 0 ? fimParcelasPagas : textoCompleto.length
+      );
+      
+      console.log('=== SEÇÃO PARCELAS PAGAS ===');
+      console.log(secaoParcelasPagas);
       
       let match;
-      while ((match = regex.exec(textoCompleto)) !== null) {
+      const clientesMap = new Map();
+      
+      while ((match = padraoCliente.exec(secaoParcelasPagas)) !== null) {
         const nome = match[1].trim();
-        const valorStr = match[2].replace(',', '.');
-        const valor = parseFloat(valorStr);
+        const valorComissao = parseFloat(match[8].replace(',', '.'));
         
-        if (!isNaN(valor) && valor > 0) {
-          console.log(`✓ Encontrado: "${nome}" = R$ ${valor}`);
-          comissoesPDF.push({ nome, valor });
+        console.log('Cliente encontrado:', nome, '- R$', valorComissao);
+        
+        // Agrupar por cliente (somar cotas)
+        if (clientesMap.has(nome)) {
+          clientesMap.set(nome, clientesMap.get(nome) + valorComissao);
+        } else {
+          clientesMap.set(nome, valorComissao);
         }
       }
       
-      // ESTRATÉGIA 2: Buscar nomes cadastrados no texto
-      if (comissoesPDF.length === 0) {
-        console.log('Tentando Estratégia 2: Buscar clientes cadastrados...');
-        const nomesClientes = clientes.filter(c => c.status !== "Cancelado").map(c => c.nomeCompleto);
-        
-        for (const nomeCliente of nomesClientes) {
-          const palavras = nomeCliente.toLowerCase().split(' ').filter(p => p.length > 2);
-          
-          for (const linha of linhas) {
-            const linhaLower = linha.toLowerCase();
-            const palavrasEncontradas = palavras.filter(p => linhaLower.includes(p));
-            
-            // Se encontrou pelo menos 2 palavras do nome
-            if (palavrasEncontradas.length >= 2) {
-              const valores = linha.match(/([\d]{1,3}(?:[.,][\d]{3})*[,][\d]{2})/g);
-              if (valores) {
-                const valor = parseFloat(valores[valores.length - 1].replace('.', '').replace(',', '.'));
-                if (!isNaN(valor) && valor > 0) {
-                  console.log(`✓ Estratégia 2: "${nomeCliente}" = R$ ${valor}`);
-                  comissoesPDF.push({ nome: nomeCliente, valor });
-                  break;
-                }
-              }
-            }
-          }
-        }
-      }
-      
-      // ESTRATÉGIA 3: Último recurso - qualquer nome + valor
-      if (comissoesPDF.length === 0) {
-        console.log('Tentando Estratégia 3: Padrão genérico...');
-        for (const linha of linhas) {
-          const nomes = linha.match(/[A-ZÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝ][a-zà-ÿ]+(?:\s+[A-ZÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝ][a-zà-ÿ]+){1,}/g);
-          const valores = linha.match(/([\d]{1,3}(?:[.,][\d]{3})*[,][\d]{2})/g);
-          
-          if (nomes && valores) {
-            const nome = nomes[0];
-            const valor = parseFloat(valores[valores.length - 1].replace('.', '').replace(',', '.'));
-            if (!isNaN(valor) && valor > 0 && nome.length > 5) {
-              console.log(`✓ Estratégia 3: "${nome}" = R$ ${valor}`);
-              comissoesPDF.push({ nome, valor });
-            }
-          }
-        }
+      // Converter Map para array
+      for (const [nome, valor] of clientesMap.entries()) {
+        comissoesPDF.push({ nome, valor });
+        console.log('✓ Total agrupado:', nome, '= R$', valor);
       }
       
       console.log('=== COMISSÕES EXTRAÍDAS ===');
       console.log(comissoesPDF);
-      console.log('=== FIM ===');
 
       // Comparar com comissões cadastradas do mês
       const comissoesDoMes = comissoesMes;
@@ -530,6 +498,257 @@ export default function GestorVendas() {
     } else {
       mostrarNotificacao("Selecione um arquivo PDF válido", "error");
     }
+  };
+
+  // IMPORTAÇÃO DE CLIENTES DO PDF
+  const importarClientesPDF = async (arquivo: File) => {
+    setProcessandoImportacao(true);
+    try {
+      const pdfjsLib = await import('pdfjs-dist');
+      pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
+      
+      const arrayBuffer = await arquivo.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      
+      let textoCompleto = '';
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const textContent = await page.getTextContent();
+        const pageText = textContent.items.map((item: any) => item.str).join(' ');
+        textoCompleto += pageText + '\n';
+      }
+
+      console.log('=== IMPORTAÇÃO DE CLIENTES ===');
+      console.log(textoCompleto);
+
+      // Extrair dados da tabela "Parcelas Pagas"
+      const clientesExtraidos: any[] = [];
+      const estornosExtraidos: any[] = [];
+      
+      // O PDF vem todo em uma linha gigante, precisamos encontrar os padrões
+      // Procurar por sequências que tenham: Nome DD/MM/AA Valor PCL Grupo Cota % Valor
+      
+      // Regex para encontrar: Nome (maiúsculas) + Data + 7 campos numéricos
+      const padraoCliente = /([A-ZÀ-Ú][A-ZÀ-Úa-zà-ú\s]+?)\s+(\d{2}\/\d{2}\/\d{2})\s+([\d.,]+)\s+(\d+)\s+(\d{5,6})\s+(\d{4})\s+([\d,]+)\s+([\d,]+)/g;
+      
+      let match;
+      let emParcelasPagas = false;
+      let emEstornos = false;
+      
+      // Detectar seções no texto
+      if (textoCompleto.includes('Parcelas Pagas')) emParcelasPagas = true;
+      const inicioEstornos = textoCompleto.indexOf('Estornos');
+      const fimParcelasPagas = inicioEstornos > 0 ? inicioEstornos : textoCompleto.indexOf('Recibos de Adiantamento');
+      
+      // Extrair seção de Parcelas Pagas
+      const secaoParcelasPagas = textoCompleto.substring(
+        textoCompleto.indexOf('Parcelas Pagas'),
+        fimParcelasPagas > 0 ? fimParcelasPagas : textoCompleto.length
+      );
+      
+      console.log('=== SEÇÃO PARCELAS PAGAS ===');
+      console.log(secaoParcelasPagas);
+      
+      while ((match = padraoCliente.exec(secaoParcelasPagas)) !== null) {
+        const dados = {
+          nome: match[1].trim(),
+          dataVenda: match[2],
+          valorCredito: parseFloat(match[3].replace('.', '').replace(',', '.')),
+          parcela: parseInt(match[4]),
+          grupo: match[5],
+          cota: match[6],
+          percentual: parseFloat(match[7].replace(',', '.')),
+          valorComissao: parseFloat(match[8].replace(',', '.'))
+        };
+        
+        console.log('Cliente encontrado:', dados.nome, '- R$', dados.valorComissao);
+        clientesExtraidos.push(dados);
+      }
+      
+      // Extrair seção de Estornos se existir
+      if (inicioEstornos > 0) {
+        const secaoEstornos = textoCompleto.substring(
+          inicioEstornos,
+          textoCompleto.indexOf('Recibos de Adiantamento')
+        );
+        
+        padraoCliente.lastIndex = 0; // Reset regex
+        while ((match = padraoCliente.exec(secaoEstornos)) !== null) {
+          const dados = {
+            nome: match[1].trim(),
+            dataVenda: match[2],
+            valorCredito: parseFloat(match[3].replace('.', '').replace(',', '.')),
+            parcela: parseInt(match[4]),
+            grupo: match[5],
+            cota: match[6],
+            percentual: parseFloat(match[7].replace(',', '.')),
+            valorComissao: parseFloat(match[8].replace(',', '.'))
+          };
+          
+          estornosExtraidos.push(dados);
+        }
+      }
+
+      console.log('Clientes extraídos:', clientesExtraidos);
+      console.log('Estornos extraídos:', estornosExtraidos);
+
+      // Agrupar por cliente
+      const clientesAgrupados = new Map();
+      
+      for (const item of clientesExtraidos) {
+        const chave = item.nome;
+        if (!clientesAgrupados.has(chave)) {
+          clientesAgrupados.set(chave, {
+            nome: item.nome,
+            dataVenda: item.dataVenda,
+            valorCredito: item.valorCredito,
+            parcela: item.parcela,
+            grupo: item.grupo,
+            percentual: item.percentual,
+            cotas: [item.cota],
+            valorTotal: item.valorComissao,
+            tipo: item.percentual === 0.07 ? 'Lead' : 'Relacional',
+            admin: item.grupo.startsWith('006') ? 'Magalu' : 'Âncora',
+            selecionado: true,
+            editavel: false
+          });
+        } else {
+          const clienteExistente = clientesAgrupados.get(chave);
+          clienteExistente.cotas.push(item.cota);
+          clienteExistente.valorTotal += item.valorComissao;
+        }
+      }
+
+      const listaClientes = Array.from(clientesAgrupados.values());
+      
+      setImportacaoClientes({
+        clientes: listaClientes,
+        estornos: estornosExtraidos
+      });
+      
+      mostrarNotificacao(`✅ ${listaClientes.length} clientes encontrados!`);
+    } catch (error) {
+      console.error("Erro:", error);
+      mostrarNotificacao("❌ Erro ao processar PDF", "error");
+    } finally {
+      setProcessandoImportacao(false);
+    }
+  };
+
+  const handleUploadImportacao = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const arquivo = e.target.files?.[0];
+    if (arquivo && arquivo.type === 'application/pdf') {
+      importarClientesPDF(arquivo);
+    } else {
+      mostrarNotificacao("Selecione um arquivo PDF válido", "error");
+    }
+  };
+
+  const confirmarImportacao = () => {
+    if (!importacaoClientes) return;
+    
+    const clientesSelecionados = importacaoClientes.clientes.filter((c: any) => c.selecionado);
+    
+    if (clientesSelecionados.length === 0) {
+      mostrarNotificacao("Selecione pelo menos um cliente", "error");
+      return;
+    }
+
+    const novosClientes: any[] = [];
+    const novasComissoes: any[] = [];
+    let novoIdCliente = Math.max(0, ...clientes.map(c => c.id)) + 1;
+    let novoIdComissao = Math.max(0, ...comissoes.map(c => c.id)) + 1;
+
+    for (const clienteImport of clientesSelecionados) {
+      // Criar cliente
+      // Converter data: 31/01/26 → 2026-01-31
+      const [dia, mes, anoAbrv] = clienteImport.dataVenda.split('/');
+      const ano = `20${anoAbrv}`; // 26 → 2026
+      const dataFormatada = `${ano}-${mes}-${dia}`;
+      
+      const cliente = {
+        id: novoIdCliente,
+        nomeCompleto: clienteImport.nome,
+        email: "",
+        telefone: "",
+        tipo: clienteImport.tipo,
+        admin: clienteImport.admin,
+        valor: clienteImport.valorCredito,
+        dataAquisicao: dataFormatada,
+        dataPrimeiraParcela: dataFormatada,
+        dataSegundaParcela: dataFormatada,
+        parcelasComissao: 10,
+        status: "Ativo",
+        gruposCotas: [{
+          grupoId: null,
+          numeroGrupo: clienteImport.grupo,
+          quantidadeCotas: clienteImport.cotas.length,
+          cotas: clienteImport.cotas
+        }]
+      };
+      
+      // Criar comissão com parcelas mensais
+      const comissaoTotal = clienteImport.valorTotal * 10; // Assumindo 10 parcelas
+      const parcelas = [];
+      
+      // Data base: a data de venda do cliente
+      const [anoBase, mesBase, diaBase] = dataFormatada.split('-').map(Number);
+      
+      for (let i = 1; i <= 10; i++) {
+        // Calcular data da parcela (adicionar i-1 meses à data base)
+        let mesParc = mesBase + (i - 1);
+        let anoParc = anoBase;
+        
+        // Ajustar ano se passar de dezembro
+        while (mesParc > 12) {
+          mesParc -= 12;
+          anoParc++;
+        }
+        
+        // Limitar dia ao máximo do mês
+        const ultimoDiaMes = new Date(anoParc, mesParc, 0).getDate();
+        const diaParc = Math.min(diaBase, ultimoDiaMes);
+        
+        const dataParcela = `${anoParc}-${String(mesParc).padStart(2, '0')}-${String(diaParc).padStart(2, '0')}`;
+        
+        const status = i <= clienteImport.parcela ? "Recebido" : "Pendente";
+        parcelas.push({
+          numero: i,
+          valor: clienteImport.valorTotal,
+          data: dataParcela,
+          status,
+          dataRecebimento: status === "Recebido" ? new Date().toISOString().split('T')[0] : null
+        });
+      }
+      
+      const comissao = {
+        id: novoIdComissao,
+        clienteId: novoIdCliente,
+        cliente: clienteImport.nome,
+        tipo: clienteImport.tipo,
+        admin: clienteImport.admin,
+        valor: clienteImport.valorCredito,
+        comissaoPercentual: clienteImport.percentual,
+        comissaoTotal,
+        parcelas: 10,
+        parcelas_detalhes: parcelas
+      };
+      
+      novosClientes.push(cliente);
+      novasComissoes.push(comissao);
+      novoIdCliente++;
+      novoIdComissao++;
+    }
+
+    const clientesAtualizados = [...clientes, ...novosClientes];
+    const comissoesAtualizadas = [...comissoes, ...novasComissoes];
+    
+    setClientes(clientesAtualizados);
+    setComissoes(comissoesAtualizadas);
+    salvarDados(grupos, clientesAtualizados, comissoesAtualizadas, configuracoes);
+    
+    setImportacaoClientes(null);
+    mostrarNotificacao(`✅ ${clientesSelecionados.length} clientes importados!`);
   };
 
   const faturadoAno = useMemo(() => {
@@ -786,13 +1005,100 @@ export default function GestorVendas() {
 
   const renderClientes = () => (
     <div className="space-y-4">
-      <button onClick={() => { setEditandoCliente(null); setNovoCliente(clienteVazio); setMostrarFormCliente(!mostrarFormCliente); }} className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg font-semibold transition-colors text-sm">
-        <Plus className="w-4 h-4" /> Novo Cliente
-      </button>
+      <div className="flex items-center gap-3 flex-wrap">
+        <button onClick={() => { setEditandoCliente(null); setNovoCliente(clienteVazio); setMostrarFormCliente(!mostrarFormCliente); }} className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg font-semibold transition-colors text-sm">
+          <Plus className="w-4 h-4" /> Novo Cliente
+        </button>
+        <label className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-semibold transition-colors cursor-pointer text-sm">
+          {processandoImportacao ? <Loader className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+          {processandoImportacao ? "Processando..." : "Importar do PDF"}
+          <input type="file" accept="application/pdf" onChange={handleUploadImportacao} className="hidden" disabled={processandoImportacao} />
+        </label>
+      </div>
 
-      {mostrarFormCliente && (
+      {importacaoClientes && (
+        <div className="bg-slate-800 p-5 rounded-xl border border-slate-700 mb-4">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="font-bold text-white text-lg">📥 Importar Clientes ({importacaoClientes.clientes.length} encontrados)</h3>
+            <button onClick={() => setImportacaoClientes(null)} className="text-slate-400 hover:text-white transition-colors">
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+
+          {/* BOTÕES NO TOPO */}
+          <div className="flex gap-3 mb-4">
+            <button onClick={confirmarImportacao} className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-3 rounded-lg font-semibold transition-colors">
+              ✓ Importar {importacaoClientes.clientes.filter((c: any) => c.selecionado).length} Clientes
+            </button>
+            <button onClick={() => setImportacaoClientes(null)} className="bg-slate-700 hover:bg-slate-600 text-white px-6 py-3 rounded-lg font-semibold transition-colors">
+              Cancelar
+            </button>
+          </div>
+
+          <div className="overflow-x-auto mb-4">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-900 border-b border-slate-700">
+                <tr>
+                  <th className="px-3 py-2 text-left"><input type="checkbox" checked={importacaoClientes.clientes.every((c: any) => c.selecionado)} onChange={e => setImportacaoClientes({...importacaoClientes, clientes: importacaoClientes.clientes.map((c: any) => ({...c, selecionado: e.target.checked}))})} className="w-4 h-4 accent-emerald-500" /></th>
+                  <th className="px-3 py-2 text-left text-slate-300 font-semibold">Nome</th>
+                  <th className="px-3 py-2 text-left text-slate-300 font-semibold">Tipo</th>
+                  <th className="px-3 py-2 text-left text-slate-300 font-semibold">Admin</th>
+                  <th className="px-3 py-2 text-left text-slate-300 font-semibold">Crédito</th>
+                  <th className="px-3 py-2 text-left text-slate-300 font-semibold">Parcela</th>
+                  <th className="px-3 py-2 text-left text-slate-300 font-semibold">Grupo</th>
+                  <th className="px-3 py-2 text-left text-slate-300 font-semibold">Cotas</th>
+                  <th className="px-3 py-2 text-left text-slate-300 font-semibold">Comissão/mês</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-700">
+                {importacaoClientes.clientes.map((cliente: any, idx: number) => (
+                  <tr key={idx} className="hover:bg-slate-700 transition-colors">
+                    <td className="px-3 py-3">
+                      <input type="checkbox" checked={cliente.selecionado} onChange={e => {
+                        const novosClientes = [...importacaoClientes.clientes];
+                        novosClientes[idx].selecionado = e.target.checked;
+                        setImportacaoClientes({...importacaoClientes, clientes: novosClientes});
+                      }} className="w-4 h-4 accent-emerald-500" />
+                    </td>
+                    <td className="px-3 py-3 font-semibold text-white">{cliente.nome}</td>
+                    <td className="px-3 py-3"><span className={`px-2 py-1 rounded text-xs font-semibold ${cliente.tipo === 'Lead' ? 'bg-blue-900 text-blue-300' : 'bg-emerald-900 text-emerald-300'}`}>{cliente.tipo}</span></td>
+                    <td className="px-3 py-3 text-slate-300">{cliente.admin}</td>
+                    <td className="px-3 py-3 text-slate-300">{formatarMoeda(cliente.valorCredito)}</td>
+                    <td className="px-3 py-3 text-slate-400">{cliente.parcela}/10</td>
+                    <td className="px-3 py-3 text-slate-400">{cliente.grupo}</td>
+                    <td className="px-3 py-3 text-slate-400">{cliente.cotas.length} ({cliente.cotas.join(', ')})</td>
+                    <td className="px-3 py-3 font-bold text-emerald-400">{formatarMoeda(cliente.valorTotal)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {importacaoClientes.estornos.length > 0 && (
+            <div className="bg-red-900/20 border border-red-700 rounded-lg p-4 mb-4">
+              <h4 className="font-bold text-red-300 mb-2">⚠️ Estornos Detectados ({importacaoClientes.estornos.length})</h4>
+              <div className="space-y-1 text-sm text-red-200">
+                {importacaoClientes.estornos.map((est: any, idx: number) => (
+                  <div key={idx}>• {est.nome} - Grupo {est.grupo} Cota {est.cota} - {formatarMoeda(est.valorComissao)}</div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="flex gap-3">
+            <button onClick={confirmarImportacao} className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-3 rounded-lg font-semibold transition-colors">
+              ✓ Importar {importacaoClientes.clientes.filter((c: any) => c.selecionado).length} Clientes
+            </button>
+            <button onClick={() => setImportacaoClientes(null)} className="bg-slate-700 hover:bg-slate-600 text-white px-6 py-3 rounded-lg font-semibold transition-colors">
+              Cancelar
+            </button>
+          </div>
+        </div>
+      )}
+
+      {mostrarFormCliente && !editandoCliente && (
         <div className="bg-slate-800 p-6 rounded-xl border border-slate-700">
-          <h3 className="font-bold text-white mb-5 text-base">{editandoCliente ? "✏️ Editar Cliente" : "Cadastrar Cliente"}</h3>
+          <h3 className="font-bold text-white mb-5 text-base">Cadastrar Novo Cliente</h3>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
             {[
               { label: "Nome Completo *", field: "nomeCompleto", type: "text", placeholder: "João da Silva Santos" },
@@ -877,8 +1183,8 @@ export default function GestorVendas() {
           </div>
 
           <div className="flex gap-2">
-            <button onClick={salvarCliente} className="bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-2 rounded-lg font-semibold text-sm transition-colors">{editandoCliente ? "Salvar Alterações" : "Salvar"}</button>
-            <button onClick={() => { setMostrarFormCliente(false); setEditandoCliente(null); setNovoCliente(clienteVazio); }} className="bg-slate-700 hover:bg-slate-600 text-white px-6 py-2 rounded-lg text-sm">Cancelar</button>
+            <button onClick={cadastrarCliente} className="bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-2 rounded-lg font-semibold text-sm transition-colors">Cadastrar</button>
+            <button onClick={() => { setMostrarFormCliente(false); setNovoCliente(clienteVazio); }} className="bg-slate-700 hover:bg-slate-600 text-white px-6 py-2 rounded-lg text-sm">Cancelar</button>
           </div>
         </div>
       )}
@@ -893,24 +1199,135 @@ export default function GestorVendas() {
               {clientes.length === 0 ? (
                 <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">Nenhum cliente cadastrado</td></tr>
               ) : clientes.map(c => (
-                <tr key={c.id} className="hover:bg-slate-700 transition-colors">
-                  <td className="px-4 py-3 font-semibold text-white whitespace-nowrap">{c.nomeCompleto}</td>
-                  <td className="px-4 py-3"><span className={`px-2 py-1 rounded text-xs font-semibold ${c.tipo === "Lead" ? "bg-blue-900 text-blue-300" : "bg-emerald-900 text-emerald-300"}`}>{c.tipo}</span></td>
-                  <td className="px-4 py-3 text-slate-400 text-xs">{c.admin}</td>
-                  <td className="px-4 py-3 text-slate-300 whitespace-nowrap">{formatarMoeda(parseFloat(c.valor || 0))}</td>
-                  <td className="px-4 py-3">
-                    <select value={c.status} onChange={e => atualizarStatusCliente(c.id, e.target.value)} className={`px-2 py-1 rounded text-xs font-semibold border focus:outline-none cursor-pointer ${c.status === "Ativo" ? "bg-emerald-900 border-emerald-700 text-emerald-200" : c.status === "Cancelado" ? "bg-red-900 border-red-700 text-red-200" : "bg-orange-900 border-orange-700 text-orange-200"}`}>
-                      <option value="Ativo">Ativo</option><option value="Cancelado">Cancelado</option><option value="Inadimplente">Inadimplente</option>
-                    </select>
-                  </td>
-                  <td className="px-4 py-3 text-slate-400 text-xs whitespace-nowrap">{new Date(c.dataPrimeiraParcela + "T12:00:00").toLocaleDateString("pt-BR")}</td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-2 justify-center">
-                      <button onClick={() => abrirEdicaoCliente(c)} className="text-blue-400 hover:text-blue-300 transition-colors" title="Editar"><Edit2 className="w-4 h-4" /></button>
-                      <button onClick={() => deletarCliente(c.id)} className="text-red-500 hover:text-red-400 transition-colors" title="Excluir"><Trash2 className="w-4 h-4" /></button>
-                    </div>
-                  </td>
-                </tr>
+                <>
+                  <tr key={c.id} className="hover:bg-slate-700 transition-colors">
+                    <td className="px-4 py-3 font-semibold text-white whitespace-nowrap">{c.nomeCompleto}</td>
+                    <td className="px-4 py-3"><span className={`px-2 py-1 rounded text-xs font-semibold ${c.tipo === "Lead" ? "bg-blue-900 text-blue-300" : "bg-emerald-900 text-emerald-300"}`}>{c.tipo}</span></td>
+                    <td className="px-4 py-3 text-slate-400 text-xs">{c.admin}</td>
+                    <td className="px-4 py-3 text-slate-300 whitespace-nowrap">{formatarMoeda(parseFloat(c.valor || 0))}</td>
+                    <td className="px-4 py-3">
+                      <select value={c.status} onChange={e => atualizarStatusCliente(c.id, e.target.value)} className={`px-2 py-1 rounded text-xs font-semibold border focus:outline-none cursor-pointer ${c.status === "Ativo" ? "bg-emerald-900 border-emerald-700 text-emerald-200" : c.status === "Cancelado" ? "bg-red-900 border-red-700 text-red-200" : "bg-orange-900 border-orange-700 text-orange-200"}`}>
+                        <option value="Ativo">Ativo</option><option value="Cancelado">Cancelado</option><option value="Inadimplente">Inadimplente</option>
+                      </select>
+                    </td>
+                    <td className="px-4 py-3 text-slate-400 text-xs whitespace-nowrap">{new Date(c.dataPrimeiraParcela + "T12:00:00").toLocaleDateString("pt-BR")}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2 justify-center">
+                        <button onClick={() => abrirEdicaoCliente(c)} className="text-blue-400 hover:text-blue-300 transition-colors" title="Editar"><Edit2 className="w-4 h-4" /></button>
+                        <button onClick={() => deletarCliente(c.id)} className="text-red-500 hover:text-red-400 transition-colors" title="Excluir"><Trash2 className="w-4 h-4" /></button>
+                      </div>
+                    </td>
+                  </tr>
+                  
+                  {/* FORMULÁRIO DE EDIÇÃO INLINE */}
+                  {editandoCliente && editandoCliente.id === c.id && (
+                    <tr key={`edit-${c.id}`}>
+                      <td colSpan={7} className="px-4 py-4 bg-slate-900 border-t-2 border-emerald-600">
+                        <div className="bg-slate-800 p-6 rounded-xl border border-slate-700">
+                          <h3 className="font-bold text-white mb-5 text-base flex items-center gap-2">
+                            <Edit2 className="w-4 h-4" /> Editando: {c.nomeCompleto}
+                          </h3>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                            {[
+                              { label: "Nome Completo *", field: "nomeCompleto", type: "text", placeholder: "João da Silva Santos" },
+                              { label: "Email", field: "email", type: "email", placeholder: "joao@email.com" },
+                              { label: "Telefone", field: "telefone", type: "text", placeholder: "11999999999" },
+                              { label: "Data Aquisição", field: "dataAquisicao", type: "date", placeholder: "" },
+                              { label: "Valor (R$) *", field: "valor", type: "number", placeholder: "50000" },
+                              { label: "Data 1ª Parcela *", field: "dataPrimeiraParcela", type: "date", placeholder: "" },
+                              { label: "Data 2ª Parcela *", field: "dataSegundaParcela", type: "date", placeholder: "" },
+                            ].map(({ label, field, type, placeholder }) => (
+                              <div key={field}>
+                                <label className="block text-xs font-semibold text-slate-400 mb-1">{label}</label>
+                                <input type={type} placeholder={placeholder} value={(novoCliente as any)[field]} onChange={e => setNovoCliente({ ...novoCliente, [field]: e.target.value })} className="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none text-sm" />
+                              </div>
+                            ))}
+                            <div>
+                              <label className="block text-xs font-semibold text-slate-400 mb-1">Tipo *</label>
+                              <select value={novoCliente.tipo} onChange={e => setNovoCliente({ ...novoCliente, tipo: e.target.value })} className="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white focus:border-emerald-500 focus:outline-none text-sm">
+                                {configuracoes.tiposComissao.map(tc => <option key={tc.id} value={tc.nome}>{tc.nome} ({tc.percentual}%)</option>)}
+                              </select>
+                            </div>
+                            <div>
+                              <label className="block text-xs font-semibold text-slate-400 mb-1">Administradora *</label>
+                              <select value={novoCliente.admin} onChange={e => setNovoCliente({ ...novoCliente, admin: e.target.value })} className="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white focus:border-emerald-500 focus:outline-none text-sm">
+                                <option>Âncora</option><option>Magalu</option>
+                              </select>
+                            </div>
+                            <div>
+                              <label className="block text-xs font-semibold text-slate-400 mb-1">Parcelas *</label>
+                              <select value={novoCliente.parcelasComissao} onChange={e => setNovoCliente({ ...novoCliente, parcelasComissao: parseInt(e.target.value) })} className="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white focus:border-emerald-500 focus:outline-none text-sm">
+                                {[3,4,5,6,7,8,9,10,12].map(n => <option key={n} value={n}>{n} parcelas</option>)}
+                              </select>
+                            </div>
+                          </div>
+
+                          {novoCliente.valor && novoCliente.tipo && (
+                            <div className="bg-slate-900 px-4 py-2 rounded-lg border border-slate-600 mb-4 text-sm flex gap-4">
+                              <span className="text-slate-400">Comissão total: <span className="font-bold text-emerald-400">{formatarMoeda(parseFloat(novoCliente.valor || "0") * (obterPercentualComissao(novoCliente.tipo) / 100))}</span></span>
+                              <span className="text-slate-400">Por parcela: <span className="font-bold text-emerald-300">{formatarMoeda(parseFloat(novoCliente.valor || "0") * (obterPercentualComissao(novoCliente.tipo) / 100) / novoCliente.parcelasComissao)}</span></span>
+                            </div>
+                          )}
+
+                          <div className="border-t border-slate-600 pt-4 mb-4">
+                            <h4 className="font-semibold text-white mb-3 text-sm">Alocar em Grupos *</h4>
+                            {grupos.filter(g => g.admin === novoCliente.admin).map(g => {
+                              const alocacao = novoCliente.gruposCotas.find((gc: any) => gc.grupoId === g.id) || { quantidadeCotas: 0, cotas: [] };
+                              const isChecked = !!novoCliente.gruposCotas.find((gc: any) => gc.grupoId === g.id);
+                              return (
+                                <div key={g.id} className="mb-3 bg-slate-900 p-3 rounded-lg border border-slate-600">
+                                  <label className="flex items-center gap-2 mb-2 cursor-pointer">
+                                    <input type="checkbox" checked={isChecked} onChange={e => {
+                                      if (e.target.checked) {
+                                        setNovoCliente({ ...novoCliente, gruposCotas: [...novoCliente.gruposCotas, { grupoId: g.id, numeroGrupo: g.numeroGrupo, quantidadeCotas: 1, cotas: [] }] });
+                                      } else {
+                                        setNovoCliente({ ...novoCliente, gruposCotas: novoCliente.gruposCotas.filter((gc: any) => gc.grupoId !== g.id) });
+                                      }
+                                    }} className="w-4 h-4 accent-emerald-500" />
+                                    <span className="text-white font-semibold text-sm">Grupo {g.numeroGrupo} ({g.admin})</span>
+                                  </label>
+                                  {isChecked && (
+                                    <>
+                                      <div className="flex gap-2 items-center mb-2">
+                                        <label className="text-xs text-slate-400">Quantidade:</label>
+                                        <input type="number" min="1" value={alocacao.quantidadeCotas} onChange={e => {
+                                          const novasCotas = Array(parseInt(e.target.value) || 0).fill(null);
+                                          alocacao.cotas.forEach((num: number, idx: number) => { if (idx < novasCotas.length) novasCotas[idx] = num; });
+                                          setNovoCliente({ ...novoCliente, gruposCotas: novoCliente.gruposCotas.map((gc: any) => gc.grupoId === g.id ? { ...gc, quantidadeCotas: parseInt(e.target.value) || 0, cotas: novasCotas } : gc) });
+                                        }} className="w-20 px-2 py-1 bg-slate-800 border border-slate-600 rounded text-white text-xs focus:border-emerald-500 focus:outline-none" />
+                                      </div>
+                                      <div className="grid grid-cols-4 gap-2">
+                                        {Array.from({ length: alocacao.quantidadeCotas }).map((_, idx) => (
+                                          <div key={idx}>
+                                            <label className="text-xs text-slate-500">Cota {idx + 1}:</label>
+                                            <input type="number" placeholder="000" value={alocacao.cotas[idx] || ""} onChange={e => {
+                                              const novasCotas = [...alocacao.cotas];
+                                              novasCotas[idx] = parseInt(e.target.value) || null;
+                                              setNovoCliente({ ...novoCliente, gruposCotas: novoCliente.gruposCotas.map((gc: any) => gc.grupoId === g.id ? { ...gc, cotas: novasCotas } : gc) });
+                                            }} className="w-full px-2 py-1 bg-slate-800 border border-slate-600 rounded text-white text-xs focus:border-emerald-500 focus:outline-none" />
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                          <div className="flex gap-3">
+                            <button onClick={salvarCliente} className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-2 rounded-lg font-semibold transition-colors text-sm">
+                              ✓ Salvar
+                            </button>
+                            <button onClick={() => { setEditandoCliente(null); setNovoCliente(clienteVazio); }} className="bg-slate-700 hover:bg-slate-600 text-white px-6 py-2 rounded-lg font-semibold transition-colors text-sm">
+                              Cancelar
+                            </button>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </>
               ))}
             </tbody>
           </table>
@@ -978,10 +1395,11 @@ export default function GestorVendas() {
         </select>
         <label className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-semibold transition-colors cursor-pointer">
           {processandoPDF ? <Loader className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
-          {processandoPDF ? "Processando..." : "Importar Relatório PDF para Conferência"}
+          {processandoPDF ? "Processando..." : "Conferir Relatório PDF"}
           <input type="file" accept="application/pdf" onChange={handleUploadPDF} className="hidden" disabled={processandoPDF} />
         </label>
       </div>
+
 
       {validacaoPDF && (
         <div className="bg-slate-800 p-5 rounded-xl border border-slate-700 mb-4">
