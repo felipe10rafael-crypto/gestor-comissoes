@@ -134,7 +134,42 @@ export default function GestorVendas() {
     }
   }, [usuario]);
 
-  const inicializarDados = useCallback(() => { setGrupos([]); setClientes([]); setComissoes([]); setGrupoFiltrado(0); salvarDados([], [], [], configuracoes); mostrarNotificacao("✅ Bem-vindo! Configure seus grupos em Configuracoes.");
+  const inicializarDados = useCallback(() => {
+    const g = [
+      { id: 1, numeroGrupo: "708", admin: "Âncora", observacoes: "Consórcio residencial" },
+      { id: 2, numeroGrupo: "707", admin: "Magalu", observacoes: "Consórcio de veículo" },
+    ];
+    const cl = [
+      { id: 1, nomeCompleto: "João Silva Santos", email: "joao@email.com", telefone: "11999999999", tipo: "Lead", admin: "Âncora", valor: 50000, dataAquisicao: "2026-01-15", dataPrimeiraParcela: "2026-01-20", dataSegundaParcela: "2026-02-20", parcelasComissao: 5, status: "Ativo", gruposCotas: [{ grupoId: 1, numeroGrupo: "708", quantidadeCotas: 5, cotas: [1,2,3,4,5] }] },
+      { id: 2, nomeCompleto: "Maria Santos Oliveira", email: "maria@email.com", telefone: "11988888888", tipo: "Relacional", admin: "Magalu", valor: 80000, dataAquisicao: "2026-02-01", dataPrimeiraParcela: "2026-02-05", dataSegundaParcela: "2026-03-05", parcelasComissao: 10, status: "Ativo", gruposCotas: [{ grupoId: 2, numeroGrupo: "707", quantidadeCotas: 8, cotas: [1,2,3,4,5,6,7,8] }] },
+    ];
+    const co = [
+      { id: 1, clienteId: 1, cliente: "João Silva Santos", tipo: "Lead", admin: "Âncora", valor: 50000, comissaoPercentual: 0.7, comissaoTotal: 350, parcelas: 5, parcelas_detalhes: [
+        { numero: 1, valor: 70, data: "2026-01-20", status: "Recebido", dataRecebimento: "2026-01-22" },
+        { numero: 2, valor: 70, data: "2026-02-20", status: "Recebido", dataRecebimento: "2026-02-25" },
+        { numero: 3, valor: 70, data: "2026-03-20", status: "Pendente", dataRecebimento: null },
+        { numero: 4, valor: 70, data: "2026-04-20", status: "Pendente", dataRecebimento: null },
+        { numero: 5, valor: 70, data: "2026-05-20", status: "Pendente", dataRecebimento: null },
+      ]},
+      { id: 2, clienteId: 2, cliente: "Maria Santos Oliveira", tipo: "Relacional", admin: "Magalu", valor: 80000, comissaoPercentual: 1.5, comissaoTotal: 1200, parcelas: 10, parcelas_detalhes: [
+        { numero: 1, valor: 120, data: "2026-02-05", status: "Recebido", dataRecebimento: "2026-02-08" },
+        { numero: 2, valor: 120, data: "2026-03-05", status: "Recebido", dataRecebimento: "2026-03-10" },
+        { numero: 3, valor: 120, data: "2026-04-05", status: "Recebido", dataRecebimento: "2026-04-08" },
+        { numero: 4, valor: 120, data: "2026-05-05", status: "Pendente", dataRecebimento: null },
+        { numero: 5, valor: 120, data: "2026-06-05", status: "Pendente", dataRecebimento: null },
+        { numero: 6, valor: 120, data: "2026-07-05", status: "Pendente", dataRecebimento: null },
+        { numero: 7, valor: 120, data: "2026-08-05", status: "Pendente", dataRecebimento: null },
+        { numero: 8, valor: 120, data: "2026-09-05", status: "Pendente", dataRecebimento: null },
+        { numero: 9, valor: 120, data: "2026-10-05", status: "Pendente", dataRecebimento: null },
+        { numero: 10, valor: 120, data: "2026-11-05", status: "Pendente", dataRecebimento: null },
+      ]},
+    ];
+    setGrupos(g); 
+    setClientes(cl); 
+    setComissoes(co); 
+    setGrupoFiltrado(1);
+    salvarDados(g, cl, co, configuracoes);
+    mostrarNotificacao("✅ Dados iniciais carregados");
   }, [salvarDados, configuracoes]);
 
   const handleLogout = async () => {
